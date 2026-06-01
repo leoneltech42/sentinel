@@ -106,6 +106,11 @@ class Signal(Base):
     valid_for_date: Mapped[date] = mapped_column(Date, index=True)
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Set automatically when the ORM updates this row (e.g. upsert on odds change).
+    # Nullable so existing rows are unaffected until their first update.
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=_now
+    )
 
     outcome: Mapped["SignalOutcome | None"] = relationship(back_populates="signal")
 

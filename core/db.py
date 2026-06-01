@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 
 from dotenv import load_dotenv
-from sqlalchemy import JSON, create_engine
+from sqlalchemy import JSON, create_engine, inspect as sa_inspect, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -47,3 +47,24 @@ def init_db() -> None:
     from core import models  # noqa: F401  (import registers the models)
 
     Base.metadata.create_all(engine)
+    _add_signals_updated_at()
+
+
+def _add_signals_updated_at() -> None:
+    """Add updated_at to signals for tables created before this column existed.
+
+    create_all() only creates tables that are entirely absent — it never alters
+    existing tables. This ALTER TABLE handles the Supabase table that was already
+    created without updated_at. Safe to call repeatedly; skips if already present.
+    """
+    try:
+        existing_cols = {c["name"] for c in sa_inspect(engine).get_columns("signals")}
+    except Exception:
+        return  # table doesn't exist yet; create_all() will create it with the column
+
+    if "updated_at" in existing_cols:
+        return  # already present — nothing to do
+
+    col_type = "TIMESTAMPTZ" if engine.dialect.name == "postgresql" else "DATETIME"
+    with engine.begin() as conn:
+        conn.execute(text(f"ALTER TABLE signals ADD COLUMN updated_at {col_type}"))

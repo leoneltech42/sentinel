@@ -20,6 +20,7 @@ Env (see .env.example):
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import uuid
 from collections import Counter
@@ -44,7 +45,15 @@ def main() -> None:
         default=None,
         help="show/resolve picks for a specific past date instead of running the pipeline",
     )
+    parser.add_argument("--verbose", action="store_true",
+                        help="show upsert/insert log messages from the orchestrator")
     args = parser.parse_args()
+
+    # Show orchestrator INFO messages when requested (or always in mock mode so
+    # upsert behaviour is clearly visible during local testing).
+    if args.verbose or args.mock:
+        logging.basicConfig(level=logging.INFO,
+                            format="  [orchestrator] %(message)s")
 
     today = datetime.now(timezone.utc).date()
 
@@ -221,25 +230,31 @@ def _verify_supabase(session, today: date) -> None:
 # --------------------------------------------------------------------------- #
 
 def _print_by_run(session, run_id: uuid.UUID, *, show_outcomes: bool = False) -> None:
-    """Show signals produced by a specific model run.
+    """Show today's signals touched by a specific model run.
 
-    If the run created no new signals (all deduped), falls back to showing
-    existing signals for today and tomorrow — so repeat runs still show picks.
+    "Touched" means either inserted or upserted during this run (model_run_id
+    matches). If nothing was touched (odds unchanged, all below noise threshold),
+    fall back to showing today's existing signals by date — so a no-op repeat
+    run still displays picks.
+
+    Signals for future dates are stored but never shown here; the user always
+    sees only games starting today.
     """
+    today = datetime.now(timezone.utc).date()
+
     signals = session.scalars(
         select(Signal)
-        .where(Signal.model_run_id == run_id)
+        .where(Signal.model_run_id == run_id, Signal.valid_for_date == today)
         .options(selectinload(Signal.outcome))
         .order_by(Signal.expected_value.desc())
     ).all()
 
-    today = datetime.now(timezone.utc).date()
     if not signals:
-        # All picks were already in the DB (deduped). Show the existing slate.
-        tomorrow = today + timedelta(days=1)
+        # Nothing was inserted or upserted for today — odds were unchanged.
+        # Show today's existing slate so the output is never empty after a stable run.
         signals = session.scalars(
             select(Signal)
-            .where(Signal.valid_for_date.in_([today, tomorrow]))
+            .where(Signal.valid_for_date == today)
             .options(selectinload(Signal.outcome))
             .order_by(Signal.expected_value.desc())
         ).all()

@@ -10,6 +10,7 @@ Resolution: for past unresolved signals, ask the adapter for the outcome.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -70,9 +71,11 @@ def run_pipeline(session: Session, adapter: Adapter) -> ModelRun:
     session.flush()
 
     # 3. Generate signals and persist, each linked to its run and raw event.
-    # Dedup: skip if a signal with the same (raw_event, signal_type, pick)
-    # already exists for any prior run. Enforces the "one global slate per day"
-    # invariant — running the pipeline twice should not double the pick list.
+    # Upsert logic: update the existing active signal if confidence or EV shifted
+    # by more than the noise threshold; insert if no prior signal exists.
+    # Resolved/void signals are never touched — they are historical records.
+    _UPSERT_THRESHOLD = 0.005  # 0.5% — smaller swings are odds noise, not a new pick
+
     signal_data = adapter.generate_signals(events)
     for sd in signal_data:
         raw = raw_by_key.get(sd.raw_event_key)
@@ -80,29 +83,55 @@ def run_pipeline(session: Session, adapter: Adapter) -> ModelRun:
             continue
 
         pick = sd.features.get("pick")
-        prior = session.scalars(
-            select(Signal).where(
-                Signal.domain_id == domain.id,
-                Signal.raw_event_id == raw.id,
-                Signal.signal_type == sd.signal_type,
-            )
-        ).all()
-        if any(s.features.get("pick") == pick for s in prior):
-            continue  # identical pick already in DB from a previous run today
 
-        session.add(
-            Signal(
-                domain_id=domain.id,
-                model_run_id=run.id,
-                raw_event_id=raw.id,
-                signal_type=sd.signal_type,
-                confidence=sd.confidence,
-                expected_value=sd.expected_value,
-                features=sd.features,
-                valid_for_date=sd.valid_for_date,
-                valid_until=sd.valid_until,
-            )
+        # Look for a pre-existing signal for the same (raw_event, signal_type, pick).
+        existing: Signal | None = next(
+            (
+                s for s in session.scalars(
+                    select(Signal).where(
+                        Signal.domain_id == domain.id,
+                        Signal.raw_event_id == raw.id,
+                        Signal.signal_type == sd.signal_type,
+                    )
+                ).all()
+                if s.features.get("pick") == pick
+            ),
+            None,
         )
+
+        if existing is not None:
+            if existing.status != "active":
+                # Historical record — never mutate resolved or void signals.
+                continue
+            conf_delta = abs(sd.confidence - existing.confidence)
+            ev_delta = abs(sd.expected_value - existing.expected_value)
+            if conf_delta > _UPSERT_THRESHOLD or ev_delta > _UPSERT_THRESHOLD:
+                existing.confidence = sd.confidence
+                existing.expected_value = sd.expected_value
+                existing.features = sd.features
+                existing.model_run_id = run.id   # tie to current run for display
+                existing.updated_at = datetime.now(timezone.utc)
+                logging.info("upserted signal %s  pick=%s  conf_delta=%.3f  ev_delta=%.3f",
+                             existing.id, pick, conf_delta, ev_delta)
+            else:
+                logging.info("skipped signal (no significant change)  pick=%s  "
+                             "conf_delta=%.4f  ev_delta=%.4f", pick, conf_delta, ev_delta)
+            continue
+
+        sig = Signal(
+            domain_id=domain.id,
+            model_run_id=run.id,
+            raw_event_id=raw.id,
+            signal_type=sd.signal_type,
+            confidence=sd.confidence,
+            expected_value=sd.expected_value,
+            features=sd.features,
+            valid_for_date=sd.valid_for_date,
+            valid_until=sd.valid_until,
+        )
+        session.add(sig)
+        session.flush()  # get the UUID assigned before logging
+        logging.info("inserted signal %s  pick=%s", sig.id, pick)
 
     run.status = "completed"
     session.commit()
