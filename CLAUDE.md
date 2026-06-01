@@ -57,45 +57,92 @@ violate them without flagging the tradeoff explicitly.
 Goal of Phase 0: **validate the model shows positive ROI / break-even on paper
 before building any product.** No web app, no billing yet.
 
-What works and is tested:
-- `core/` schema (8 tables) and orchestrator
-- `adapters/betting/`: The Odds API ingestion, Poisson models (soccer +
-  baseball), de-vig, EV, value-bet detection
-- `scripts/paper_trade.py --mock` runs the full pipeline end-to-end, no network
+Built and working:
+- **Live pipeline:** The Odds API → Poisson model → signals → Supabase
+- **GitHub Actions:** `daily_picks` (09:00 ART / 12:00 UTC) + `daily_resolve`
+  (00:00 ART / 03:00 UTC next day), both with pip cache and secrets validation
+- **Telegram notifications:** picks message in the morning, results at night,
+  via `--notify` flag; `core/output/telegram.py` + `core/output/__init__.py`
+- **Resolution loop:** MLB via MLB Stats API — computes `was_correct` and
+  stores final score in `outcome_metadata`; `user_signal_views.pnl` updated
+  at resolution time
+- **Signal upsert:** refreshes an active signal when confidence or EV delta
+  > 0.5%; resolved/void signals are immutable
+- **Today-only display:** `valid_for_date == today` filter on all terminal and
+  Telegram output — future-dated signals stored but never surfaced early
+- **Personal tracking:** `scripts/track.py follow <uuid> <stake>` and
+  `scripts/track.py pnl` — reads `UserSignalView` stake/pnl/followed
 
-What is NOT done / needs verification:
-- **Resolution is a stub** (`BettingAdapter.resolve` returns `None`). First job
-  to close the paper-trading loop: fetch real final scores and compute
-  `was_correct` + CLV.
-- **Soccer model uses a static ratings map** in `adapters/betting/stats.py`
-  (`WORLD_CUP_RATINGS`), not real stats. It's a v0 placeholder — without an
-  independent stats feed the model just reads the market back and finds no real
-  value. Replace with a feed (e.g. football-data.org).
-- **Live API calls are untested** (this code was written without network access).
-  Verify The Odds API and MLB Stats API field names against real responses on
-  first run.
+Intentionally deferred — do not implement without discussion:
+- **Soccer / World Cup model:** deferred; MLB has 162 games/season, faster
+  validation cycle and more reliable Poisson fit
+- **Telegram webhook / polling:** deferred to Phase 1 on Railway
+- **Alembic migrations:** using `ALTER TABLE` fallback in `core/db.py` for
+  Phase 0; Alembic is Phase 1
+- **`users` table expansion:** `telegram_chat_id`, `stripe_customer_id`,
+  preferences — Phase 1
+- **`/refresh` command for premium users:** Phase 1
+- **Bankroll / staking suggestions:** deferred
+
+## Recorded design decisions
+
+- `core/` never imports from `adapters/`; genericity is the IP.
+- Domain-specific data always in jsonb (`features`, `payload`, etc.), never
+  as typed columns.
+- `raw_events` is append-only; it is the audit log and retraining corpus.
+- Signals are global; `user_signal_views` holds per-user stake and P&L.
+- Supabase **Session Mode Pooler** (port 5432) required — the direct
+  connection (`db.*.supabase.co`) is IPv6-only and unreachable on this machine.
+- `signals.updated_at` was added via `ALTER TABLE` fallback in `init_db()`,
+  not Alembic. SQLAlchemy `onupdate=_now` keeps it current on every ORM write.
+- Signal upsert fires when confidence **or** EV delta > 0.5%, and only on
+  `status == "active"` signals — resolved/void are never overwritten.
+- Daily output is filtered to `valid_for_date == today`; signals for future
+  dates are stored but not displayed until their date arrives.
+- `SENTINEL_USER_ID` in `.env` is a Phase 0 shortcut. Phase 1 replaces
+  `_get_or_create_user()` in `scripts/track.py` with a JWT lookup from
+  Supabase Auth — nothing else in that file needs to change.
+- Back-to-back games for the same team on consecutive dates are valid,
+  distinct signals — not duplicates. Dedup key is `(event_key, pick)`.
+- Telegram picks message shows full signal UUID in a `<code>` block so it
+  can be pasted directly into `scripts/track.py follow`.
+- Soccer / World Cup model deferred — static `WORLD_CUP_RATINGS` map in
+  `adapters/betting/stats.py` is a placeholder; without a real stats feed it
+  just reads the market back and finds no genuine edge.
 
 ## Conventions
 
 - Python 3.12. Type hints everywhere. `from __future__ import annotations`.
-- Code comments and docstrings in **English** (portfolio is English-base).
-- Commits: Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
-- DB target via `DATABASE_URL` env var: Supabase/Postgres in prod, SQLite local
-  for fast iteration. See `.env.example`.
-- Run the pipeline: `python -m scripts.paper_trade --mock` (safe, no quota).
+- Code comments and docstrings in **English** (portfolio is English-based).
+- Commits: Conventional Commits (`feat:`, `fix:`, `ci:`, `chore:`, `docs:`).
+- DB target via `DATABASE_URL` env var: Supabase/Postgres in prod, SQLite
+  locally for fast iteration. See `.env.example`.
+- `--mock` never calls external APIs, writes nothing to the DB, and never
+  sends notifications. Always safe to run.
+- `--notify` must be passed explicitly — notifications are never sent by
+  default.
+- GitHub Actions secrets: `DATABASE_URL`, `ODDS_API_KEY`,
+  `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+- `SENTINEL_USER_ID` in `.env` identifies the Phase 0 user in all scripts.
 - Validate model math in isolation before wiring it to the DB or live APIs.
 
-## Suggested next steps
+## Phase 0 remaining work
 
-1. Implement `resolve()` to close the paper-trading loop and start measuring ROI.
-2. Wire a real soccer stats feed to replace `WORLD_CUP_RATINGS`.
-3. Verify live API field names; run `--mock` first, then a small live slate.
-4. Only after the model validates on paper: start Phase 1 (API + web app).
+**Gate to Phase 1:** model shows positive ROI or break-even after 2–3 weeks
+of live paper trading on MLB. Track daily with `python -m scripts.track pnl`.
+
+Remaining Phase 0 work:
+- Run `daily_picks` → follow signals → `daily_resolve` every day for 2–3 weeks
+- Monitor win rate and P&L trend via `scripts/track.py pnl`
+- If model validates → start Phase 1 (FastAPI + Next.js + Railway)
+- If model needs work → tune `min_ev` / `min_confidence` thresholds or improve
+  the MLB stats source before moving to Phase 1
 
 ## What to ask before doing
 
 - Anything that adds domain knowledge to `core/`.
 - Anything that adds typed domain columns instead of jsonb.
 - Per-user pick generation.
+- Implementing any item listed under "Intentionally deferred" above.
 - Spending real money or placing real bets — this project paper-trades only;
   it never handles user funds or integrates with bookmakers.
