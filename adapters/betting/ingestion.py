@@ -30,6 +30,13 @@ class OddsAPIClient:
         self.api_key = api_key
         self.regions = regions  # eu gives decimal odds
         self.market = market  # h2h = moneyline / match winner
+        # Populated after each successful request; read via .last_quota.
+        self._last_quota: dict[str, str] = {}
+
+    @property
+    def last_quota(self) -> dict[str, str]:
+        """Headers x-requests-used and x-requests-remaining from the last call."""
+        return self._last_quota
 
     def fetch_sport(self, sport_key: str) -> list[RawEventData]:
         """Fetch the current odds slate for one sport, normalized to RawEventData."""
@@ -42,12 +49,21 @@ class OddsAPIClient:
         }
         resp = requests.get(url, params=params, timeout=30)
         resp.raise_for_status()
+        # Capture quota headers for every successful call; last one wins on fetch_all.
+        self._last_quota = {
+            "x-requests-used": resp.headers.get("x-requests-used", "?"),
+            "x-requests-remaining": resp.headers.get("x-requests-remaining", "?"),
+        }
         return [self._to_event(sport_key, ev) for ev in resp.json()]
 
     def fetch_all(self) -> list[RawEventData]:
         events: list[RawEventData] = []
         for sport_key in SPORT_KEYS.values():
-            events.extend(self.fetch_sport(sport_key))
+            try:
+                events.extend(self.fetch_sport(sport_key))
+            except Exception as exc:
+                # Log and continue — one sport failing shouldn't abort the whole run.
+                print(f"  [warn] Could not fetch {sport_key}: {exc}")
         return events
 
     @staticmethod

@@ -133,6 +133,69 @@ class BettingAdapter(Adapter):
             return {home: p_home, away: p_away}
         return None
 
+    def evaluate_events(self, events: list[RawEventData]) -> list[dict[str, Any]]:
+        """Return per-event model evaluation for diagnostics (not stored to DB).
+
+        Each entry contains the match, all selections with their model/market
+        probabilities and EV, and whether they cleared the configured thresholds.
+        """
+        results: list[dict[str, Any]] = []
+        for ev in events:
+            sport_key = ev.event_key.split("::", 1)[0]
+            home = ev.payload.get("home_team", "?")
+            away = ev.payload.get("away_team", "?")
+            odds_map = best_h2h_odds(ev.payload)
+
+            entry: dict[str, Any] = {
+                "match": f"{home} vs {away}",
+                "sport": sport_key,
+                "event_key": ev.event_key,
+                "game_time": ev.event_at.isoformat(),
+                "has_odds": bool(odds_map),
+                "supported": False,
+                "skip_reason": None,
+                "selections": [],
+            }
+
+            if not odds_map:
+                entry["skip_reason"] = "no bookmaker odds in payload"
+                results.append(entry)
+                continue
+
+            probs = self._model_probs(sport_key, home, away, odds_map)
+            if probs is None:
+                entry["skip_reason"] = f"sport '{sport_key}' not modelled yet"
+                results.append(entry)
+                continue
+
+            entry["supported"] = True
+            fair_probs = M.devig(list(odds_map.values()))
+            fair_map = dict(zip(odds_map.keys(), fair_probs))
+
+            for sel, model_p in probs.items():
+                odd = odds_map.get(sel, 0.0)
+                mkt_p = fair_map.get(sel, 0.0)
+                ev_val = M.expected_value(model_p, odd)
+                fails: list[str] = []
+                if model_p < self._min_confidence:
+                    fails.append(f"confidence {model_p:.1%} < {self._min_confidence:.1%}")
+                if ev_val < self._min_ev:
+                    fails.append(f"EV {ev_val:+.1%} < {self._min_ev:+.1%}")
+                if model_p <= mkt_p:
+                    fails.append(f"model {model_p:.1%} <= market {mkt_p:.1%}")
+                entry["selections"].append({
+                    "selection": sel,
+                    "odd": round(odd, 3),
+                    "model_prob": round(model_p, 4),
+                    "market_prob": round(mkt_p, 4),
+                    "ev": round(ev_val, 4),
+                    "passes": len(fails) == 0,
+                    "fail_reasons": fails,
+                })
+
+            results.append(entry)
+        return results
+
     # --- resolution ------------------------------------------------------- #
     def resolve(self, signal: ResolvableSignal) -> OutcomeData | None:
         """Binary resolution: did the pick win? Returns None until the game ends.
@@ -140,8 +203,8 @@ class BettingAdapter(Adapter):
         Returns OutcomeData with metadata['void']=True for suspended/cancelled games.
         Only MLB is implemented; soccer returns None (no stats feed yet).
         """
-        if signal.valid_for_date >= datetime.now(timezone.utc).date():
-            return None  # event hasn't happened yet
+        if signal.valid_for_date > datetime.now(timezone.utc).date():
+            return None  # event is scheduled for a future date (strict future)
 
         sport = signal.features.get("sport", "")
         if sport != SPORT_KEYS["mlb"]:
