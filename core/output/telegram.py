@@ -47,11 +47,15 @@ def _format_picks(signals: list[Signal], for_date: date) -> str:
         lines.append(f"{i}. <b>{home} vs {away}</b>")
         lines.append(f"   Pick: <b>{pick}</b> @ {odd}")
         lines.append(f"   Edge: {edge:+.1%} | EV: {ev:+.1%} | Conf: {conf:.0%}")
+        lines.append(f"   <code>follow {s.id}</code>")
         lines.append("")
 
     n = len(signals)
     lines.append(f"{n} pick{'s' if n != 1 else ''} today. "
                  "Paper trade only &#8212; track your results.")
+    lines.append("")
+    lines.append("To follow a pick: "
+                 "<code>python -m scripts.track follow &lt;id&gt; &lt;stake&gt;</code>")
     return "\n".join(lines)
 
 

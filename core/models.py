@@ -155,3 +155,5 @@ class UserSignalView(Base):
     stake: Mapped[float | None] = mapped_column(Float)
     pnl: Mapped[float | None] = mapped_column(Float)
     viewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    signal: Mapped["Signal"] = relationship()
