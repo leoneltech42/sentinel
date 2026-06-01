@@ -1,0 +1,125 @@
+# Sentinel Phase 0 — Daily Resolution
+#
+# Runs resolution against yesterday's MLB results and records signal_outcomes
+# in Supabase. Runs at 06:00 UTC = 03:00 ART — late enough that all MLB
+# games (last pitch ~04:00 UTC for West Coast extra-innings edge cases) are
+# guaranteed to be final.
+#
+# Manual trigger lets you back-fill any past date via the `date` input.
+
+name: Daily Resolution
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to resolve (YYYY-MM-DD). Leave blank to resolve yesterday.'
+        required: false
+        default: ''
+
+jobs:
+  resolve:
+    name: Resolve picks
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------------ #
+      # Setup                                                               #
+      # ------------------------------------------------------------------ #
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ------------------------------------------------------------------ #
+      # Pre-flight checks                                                   #
+      # ------------------------------------------------------------------ #
+      - name: Validate secrets
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "ERROR: DATABASE_URL secret is not set."
+            echo "Go to: Settings -> Secrets and variables -> Actions -> New repository secret"
+            exit 1
+          fi
+          if [ -z "$ODDS_API_KEY" ]; then
+            echo "ERROR: ODDS_API_KEY secret is not set."
+            exit 1
+          fi
+          echo "Secrets present — proceeding."
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+
+      # ------------------------------------------------------------------ #
+      # Compute target date                                                 #
+      # ------------------------------------------------------------------ #
+      - name: Compute target date
+        id: date
+        run: |
+          INPUT_DATE="${{ inputs.date }}"
+          if [ -n "$INPUT_DATE" ]; then
+            DATE="$INPUT_DATE"
+            echo "Using manually supplied date: ${DATE}"
+          else
+            DATE=$(date -u -d "yesterday" +%Y-%m-%d)
+            echo "No date supplied — defaulting to yesterday: ${DATE}"
+          fi
+          echo "DATE=${DATE}" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------ #
+      # Resolution run                                                      #
+      # ------------------------------------------------------------------ #
+      - name: Run resolution
+        id: resolve
+        run: |
+          python -m scripts.paper_trade --resolve --date "${{ steps.date.outputs.DATE }}" \
+            2>&1 | tee /tmp/resolve_output.txt
+          exit ${PIPESTATUS[0]}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+
+      # ------------------------------------------------------------------ #
+      # Job summary                                                         #
+      # ------------------------------------------------------------------ #
+      - name: Write job summary
+        if: always()
+        run: |
+          TARGET_DATE="${{ steps.date.outputs.DATE }}"
+          {
+            echo "## Sentinel Resolution — ${TARGET_DATE}"
+            echo ""
+
+            # Parse win/loss counts from the [W] / [L] markers in the output.
+            WINS=$(grep -c "\[W\]" /tmp/resolve_output.txt 2>/dev/null || echo 0)
+            LOSSES=$(grep -c "\[L\]" /tmp/resolve_output.txt 2>/dev/null || echo 0)
+            VOIDS=$(grep -c "void" /tmp/resolve_output.txt 2>/dev/null || echo 0)
+            TOTAL=$(( WINS + LOSSES ))
+
+            if [ "$TOTAL" -gt 0 ]; then
+              echo "**Result: ${WINS}/${TOTAL} correct** (${VOIDS} void)"
+            else
+              echo "**No signals resolved for ${TARGET_DATE}.**"
+            fi
+
+            echo ""
+            echo '```'
+            cat /tmp/resolve_output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
