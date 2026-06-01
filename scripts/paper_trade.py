@@ -6,15 +6,19 @@ yet. The goal is to validate the model shows positive ROI / break-even before
 building anything else.
 
 Usage:
-    python -m scripts.paper_trade --mock                          # sample data, no network
-    python -m scripts.paper_trade                                 # live The Odds API (uses key)
-    python -m scripts.paper_trade --resolve                       # resolve today's picks too
-    python -m scripts.paper_trade --date 2026-05-30 --resolve     # resolve a specific past date
+    python -m scripts.paper_trade --mock                               # sample data, no network
+    python -m scripts.paper_trade                                      # live The Odds API
+    python -m scripts.paper_trade --resolve                            # resolve today's picks
+    python -m scripts.paper_trade --date 2026-05-30 --resolve         # resolve a past date
+    python -m scripts.paper_trade --notify                             # picks + Telegram message
+    python -m scripts.paper_trade --resolve --date X --notify         # results + Telegram message
 
 Env (see .env.example):
-    ODDS_API_KEY    your The Odds API key
-    DATABASE_URL    Supabase/Postgres URL, or omit for local SQLite
-    SEASON          MLB season year (default: current year)
+    ODDS_API_KEY           your The Odds API key
+    DATABASE_URL           Supabase/Postgres URL, or omit for local SQLite
+    SEASON                 MLB season year (default: current year)
+    TELEGRAM_BOT_TOKEN     optional — enables Telegram notifications
+    TELEGRAM_CHAT_ID       optional — target chat for notifications
 """
 
 from __future__ import annotations
@@ -47,6 +51,9 @@ def main() -> None:
     )
     parser.add_argument("--verbose", action="store_true",
                         help="show upsert/insert log messages from the orchestrator")
+    parser.add_argument("--notify", action="store_true",
+                        help="send Telegram notification (requires TELEGRAM_* env vars; "
+                             "ignored with --mock)")
     args = parser.parse_args()
 
     # Show orchestrator INFO messages when requested (or always in mock mode so
@@ -74,6 +81,9 @@ def main() -> None:
         mlb_runs_override=mlb_runs_override,
     )
 
+    # Whether to fire notifications this run.
+    do_notify = args.notify and not args.mock
+
     init_db()
     with SessionLocal() as session:
         if args.date:
@@ -83,6 +93,8 @@ def main() -> None:
                 n = run_resolution(session, adapter)
                 print(f"Resolved {n} past signal(s).\n")
                 _verify_outcomes_supabase(session, target_date)
+                if do_notify:
+                    _send_results_notification(session, target_date)
             _print_by_date(session, target_date, show_outcomes=True)
             return
 
@@ -111,7 +123,12 @@ def main() -> None:
             n = run_resolution(session, adapter)
             print(f"Resolved {n} past signal(s).\n")
 
-        _print_by_run(session, run.id, show_outcomes=args.resolve)
+        signals = _print_by_run(session, run.id, show_outcomes=args.resolve)
+
+        if do_notify:
+            _send_picks_notification(signals, today)
+            if args.resolve:
+                _send_results_notification(session, today)
 
         if not args.mock:
             _verify_supabase(session, today)
@@ -226,10 +243,43 @@ def _verify_supabase(session, today: date) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Notification helpers                                                         #
+# --------------------------------------------------------------------------- #
+
+def _send_picks_notification(signals: list[Signal], for_date: date) -> None:
+    """Fire the picks Telegram message. Warns on failure — never aborts the run."""
+    from core.output import notify_picks
+    try:
+        notify_picks(signals, for_date)
+        print(f"  Telegram picks notification sent ({len(signals)} pick(s)).")
+    except Exception as exc:
+        print(f"  Telegram notification failed (picks): {exc}")
+
+
+def _send_results_notification(session, for_date: date) -> None:
+    """Query the DB for today's full signal slate and send the results message."""
+    from core.output import notify_results
+    signals = list(session.scalars(
+        select(Signal)
+        .where(Signal.valid_for_date == for_date)
+        .options(selectinload(Signal.outcome))
+        .order_by(Signal.expected_value.desc())
+    ).all())
+    try:
+        notify_results(signals, for_date)
+        resolved = sum(1 for s in signals if s.status == "resolved")
+        print(f"  Telegram results notification sent ({resolved} resolved).")
+    except Exception as exc:
+        print(f"  Telegram notification failed (results): {exc}")
+
+
+# --------------------------------------------------------------------------- #
 # Display helpers                                                              #
 # --------------------------------------------------------------------------- #
 
-def _print_by_run(session, run_id: uuid.UUID, *, show_outcomes: bool = False) -> None:
+def _print_by_run(
+    session, run_id: uuid.UUID, *, show_outcomes: bool = False
+) -> list[Signal]:
     """Show today's signals touched by a specific model run.
 
     "Touched" means either inserted or upserted during this run (model_run_id
@@ -239,27 +289,30 @@ def _print_by_run(session, run_id: uuid.UUID, *, show_outcomes: bool = False) ->
 
     Signals for future dates are stored but never shown here; the user always
     sees only games starting today.
+
+    Returns the list of Signal objects that were rendered (used for notifications).
     """
     today = datetime.now(timezone.utc).date()
 
-    signals = session.scalars(
+    signals = list(session.scalars(
         select(Signal)
         .where(Signal.model_run_id == run_id, Signal.valid_for_date == today)
         .options(selectinload(Signal.outcome))
         .order_by(Signal.expected_value.desc())
-    ).all()
+    ).all())
 
     if not signals:
         # Nothing was inserted or upserted for today — odds were unchanged.
         # Show today's existing slate so the output is never empty after a stable run.
-        signals = session.scalars(
+        signals = list(session.scalars(
             select(Signal)
             .where(Signal.valid_for_date == today)
             .options(selectinload(Signal.outcome))
             .order_by(Signal.expected_value.desc())
-        ).all()
+        ).all())
 
     _render(signals, today, show_outcomes=show_outcomes)
+    return signals
 
 
 def _print_by_date(session, target_date: date, *, show_outcomes: bool = False) -> None:

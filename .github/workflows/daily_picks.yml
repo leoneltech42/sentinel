@@ -72,12 +72,14 @@ jobs:
       - name: Run pipeline (ingest -> model -> signals)
         id: pipeline
         run: |
-          python -m scripts.paper_trade 2>&1 | tee /tmp/picks_output.txt
+          python -m scripts.paper_trade --notify 2>&1 | tee /tmp/picks_output.txt
           # Propagate non-zero exit codes even through tee.
           exit ${PIPESTATUS[0]}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       # ------------------------------------------------------------------ #
       # Job summary                                                         #

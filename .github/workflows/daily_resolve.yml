@@ -95,11 +95,13 @@ jobs:
         id: resolve
         run: |
           python -m scripts.paper_trade --resolve --date "${{ steps.date.outputs.DATE }}" \
-            2>&1 | tee /tmp/resolve_output.txt
+            --notify 2>&1 | tee /tmp/resolve_output.txt
           exit ${PIPESTATUS[0]}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       # ------------------------------------------------------------------ #
       # Job summary                                                         #
