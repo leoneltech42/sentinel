@@ -11,7 +11,7 @@ name: Daily Resolution
 
 on:
   schedule:
-    - cron: '35 18 * * *'
+    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       date:
