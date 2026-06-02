@@ -252,11 +252,13 @@ def _print_flights_price_summary(raw_events: list) -> None:
 # --------------------------------------------------------------------------- #
 
 def _verify_outcomes_supabase(session, target_date: date) -> None:
-    """After resolution: print signal_outcomes stats for target_date (betting)."""
+    """After resolution: print signal_outcomes stats for target_date (betting only)."""
+    from core.models import Domain
     rows = session.scalars(
         select(SignalOutcome)
         .join(Signal, SignalOutcome.signal_id == Signal.id)
-        .where(Signal.valid_for_date == target_date)
+        .join(Domain, Signal.domain_id == Domain.id)
+        .where(Signal.valid_for_date == target_date, Domain.slug == "betting")
         .options(selectinload(SignalOutcome.signal))
     ).all()
 
@@ -405,10 +407,20 @@ def _print_by_run(
 def _print_by_date(
     session, target_date: date, domain: str, *, show_outcomes: bool = False
 ) -> None:
-    """Show all signals with valid_for_date == target_date."""
+    """Show signals for target_date, filtered to the current domain.
+
+    The domain filter (join Signal -> Domain) prevents betting signals from
+    appearing in the flights renderer and vice-versa, which would otherwise
+    crash on missing domain-specific feature keys (e.g. 'match' for betting).
+    """
+    from core.models import Domain
     signals = session.scalars(
         select(Signal)
-        .where(Signal.valid_for_date == target_date)
+        .join(Domain, Signal.domain_id == Domain.id)
+        .where(
+            Signal.valid_for_date == target_date,
+            Domain.slug == domain,
+        )
         .options(selectinload(Signal.outcome))
         .order_by(Signal.expected_value.desc())
     ).all()
@@ -432,6 +444,12 @@ def _render_betting(signals: list[Signal], label: date, *, show_outcomes: bool) 
 
     for s in signals:
         f = s.features
+        if "match" not in f:
+            # Safety guard: a non-betting signal leaked into the betting renderer
+            # (should not happen after the domain filter fixes, but defensive).
+            import logging
+            logging.warning("_render_betting: skipping signal %s — no 'match' key", s.id)
+            continue
         lines = [
             f"\n  {f['match']}  ({f['sport'].split('_')[0]})",
             f"    Pick:        {f['pick']}  @ {f['best_odd']}",
