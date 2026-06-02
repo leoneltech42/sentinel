@@ -3,10 +3,12 @@
 Usage:
     python -m scripts.track follow <signal_uuid> <stake>
     python -m scripts.track pnl
+    python -m scripts.track global
 
 Commands:
     follow  Record a paper-trade follow with a given stake amount.
     pnl     Print personal P&L summary for all followed picks.
+    global  Show system-wide P&L across all resolved signals (no user needed).
 
 Env (see .env.example):
     SENTINEL_USER_ID     UUID of your user row (printed on first run)
@@ -24,12 +26,13 @@ import argparse
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from core.db import SessionLocal, init_db
-from core.models import Domain, Signal, User, UserSignalView
+from core.models import Domain, Signal, SignalOutcome, User, UserSignalView
 
 # Ensure Unicode output (tick marks, currency symbols) works on Windows
 # terminals that default to cp1252.  errors='replace' prevents hard crashes
@@ -48,7 +51,7 @@ def main() -> None:
         description="Sentinel Phase 0 personal paper-trade tracker",
     )
     sub = parser.add_subparsers(dest="cmd", required=True,
-                                metavar="{follow,pnl}")
+                                metavar="{follow,pnl,global}")
 
     # follow
     p_follow = sub.add_parser("follow",
@@ -61,12 +64,18 @@ def main() -> None:
     # pnl
     sub.add_parser("pnl", help="show personal P&L summary")
 
+    # global
+    sub.add_parser("global",
+                   help="show system-wide P&L across all resolved signals")
+
     args = parser.parse_args()
     init_db()
 
     with SessionLocal() as session:
         if args.cmd == "follow":
             _cmd_follow(session, args.signal_uuid, args.stake)
+        elif args.cmd == "global":
+            _cmd_global(session)
         else:
             _cmd_pnl(session)
 
@@ -229,6 +238,103 @@ def _cmd_pnl(session) -> None:
             else:
                 print(f"  [P] {label:<54}  "
                       f"${stake:.0f} -> pending")
+
+    print(f"{'='*64}\n")
+
+
+# --------------------------------------------------------------------------- #
+# global                                                                       #
+# --------------------------------------------------------------------------- #
+
+def _cmd_global(session) -> None:
+    """System-wide P&L across all resolved betting signals.
+
+    No user context required — this is the full model scorecard.
+    Net units assumes 1 unit staked per pick:
+      won:  profit = actual_value - 1  (actual_value is the odd paid)
+      lost: profit = -1
+      void: profit = 0 (stake returned, excluded from win-rate calc)
+    ROI = net_units / resolved_count * 100
+    """
+    today = datetime.now(timezone.utc).date()
+
+    # All betting signals, newest first
+    all_signals = session.scalars(
+        select(Signal)
+        .join(Domain, Signal.domain_id == Domain.id)
+        .where(Domain.slug == "betting")
+        .options(selectinload(Signal.outcome))
+        .order_by(Signal.valid_for_date.desc(), Signal.created_at.desc())
+    ).all()
+
+    resolved = [s for s in all_signals if s.status == "resolved"]
+    voided   = [s for s in all_signals if s.status == "void"]
+    pending  = [s for s in all_signals
+                if s.status == "active" and s.valid_for_date <= today]
+    won      = [s for s in resolved if s.outcome and s.outcome.was_correct]
+    lost     = [s for s in resolved if s.outcome and not s.outcome.was_correct]
+
+    # Net units (1u/pick): void counts as 0 (stake back)
+    net_units = 0.0
+    for s in resolved:
+        if s.outcome:
+            net_units += (s.outcome.actual_value - 1.0) if s.outcome.was_correct else -1.0
+
+    roi = (net_units / len(resolved) * 100) if resolved else 0.0
+
+    # -- header ----------------------------------------------------------------
+    print(f"\n{'='*64}")
+    print(f"  SENTINEL — System P&L (betting)")
+    print(f"{'='*64}")
+    print(f"  Generated picks:   {len(all_signals)}")
+
+    void_note = f", {len(voided)} void" if voided else ""
+    print(f"  Resolved:          {len(resolved)}  ({len(pending)} pending{void_note})")
+
+    if resolved:
+        print(f"  Won:               {len(won)} / {len(resolved)}  "
+              f"({len(won) / len(resolved):.1%})")
+    else:
+        print(f"  Won:               -- / --  (no results yet)")
+
+    # -- units + ROI -----------------------------------------------------------
+    print()
+    unit_sign = "+" if net_units >= 0 else ""
+    roi_sign  = "+" if roi >= 0 else ""
+    print(f"  Net units (1u/pick):  {unit_sign}{net_units:.2f}")
+    print(f"  ROI (1u/pick):        {roi_sign}{roi:.1f}%")
+
+    # -- confidence bands ------------------------------------------------------
+    bands = [
+        ("50–60%", 0.50, 0.60),
+        ("60–70%", 0.60, 0.70),
+        ("70%+",        0.70, 1.01),
+    ]
+    print()
+    print(f"  By confidence band:")
+    for label, lo, hi in bands:
+        band_res = [s for s in resolved if lo <= s.confidence < hi]
+        band_won = [s for s in band_res if s.outcome and s.outcome.was_correct]
+        if band_res:
+            pct = len(band_won) / len(band_res) * 100
+            print(f"    {label}:  {pct:.1f}%  correct  (n={len(band_res)})")
+        else:
+            print(f"    {label}:  --  (n=0)")
+
+    # -- last 10 resolved picks ------------------------------------------------
+    last_10 = resolved[:10]   # already sorted newest-first
+    if last_10:
+        print()
+        print(f"  Last {len(last_10)} resolved picks:")
+        for s in last_10:
+            f    = s.features
+            match = f.get("match", "?")
+            odd   = f.get("best_odd", "?")
+            edge  = f.get("edge")
+            icon  = "[W]" if (s.outcome and s.outcome.was_correct) else "[L]"
+            odd_str  = f"@ {odd:.2f}" if isinstance(odd, float) else f"@ {odd}"
+            edge_str = f"  edge {edge:+.1%}" if isinstance(edge, float) else ""
+            print(f"  {icon} {match:<44}  {odd_str}{edge_str}")
 
     print(f"{'='*64}\n")
 
