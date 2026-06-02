@@ -32,3 +32,8 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Backtest artefacts — generated files, not source
+scripts/backtest_results*.csv
+gl*.zip
+GL*.TXT
