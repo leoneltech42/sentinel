@@ -3,6 +3,11 @@
 Entirely generic: all domain data arrives via signal.features (a plain dict)
 and the Signal ORM model. No betting-specific imports live here.
 
+The `domain` parameter selects the header emoji and label — the only
+domain-aware change permitted in core/output/ per CLAUDE.md. All domain-
+specific field extraction falls back gracefully so this module never crashes
+on an unknown domain.
+
 Phase 0: a single TELEGRAM_CHAT_ID drives a single-item chat_ids list.
 Phase 1: pass chat_ids for every subscribed user — nothing else changes.
 """
@@ -25,16 +30,37 @@ def _esc(s: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Per-domain header config                                                     #
+# --------------------------------------------------------------------------- #
+# Maps domain slug -> (emoji HTML entity, label).
+# This is the only place in core/output/ that is domain-aware.
+_DOMAIN_HEADER: dict[str, tuple[str, str]] = {
+    "betting": ("&#9918;", "Sentinel picks"),          # ⚾
+    "flights": ("&#9992;", "Flight alert"),            # ✈
+}
+_DOMAIN_HEADER_DEFAULT = ("&#128204;", "Sentinel alert")  # 📌
+
+
+def _header(domain: str, for_date: date) -> str:
+    emoji, label = _DOMAIN_HEADER.get(domain, _DOMAIN_HEADER_DEFAULT)
+    return f"<b>{emoji} {_esc(label)} &#8212; {for_date}</b>"
+
+
+# --------------------------------------------------------------------------- #
 # Message formatters (module-level so they're testable in isolation)          #
 # --------------------------------------------------------------------------- #
 
-def _format_picks(signals: list[Signal], for_date: date) -> str:
-    lines: list[str] = [f"<b>&#9918; Sentinel picks &#8212; {for_date}</b>", ""]
+def _format_picks(signals: list[Signal], for_date: date, domain: str = "betting") -> str:
+    lines: list[str] = [_header(domain, for_date), ""]
 
     if not signals:
-        lines.append("No +EV picks found for today.")
+        lines.append("No picks / alerts found for today.")
         return "\n".join(lines)
 
+    if domain == "flights":
+        return _format_picks_flights(signals, for_date)
+
+    # ---- Betting picks ----
     for i, s in enumerate(signals, 1):
         f = s.features
         home = _esc(str(f.get("home_team", "?")))
@@ -59,7 +85,42 @@ def _format_picks(signals: list[Signal], for_date: date) -> str:
     return "\n".join(lines)
 
 
-def _format_results(signals: list[Signal], for_date: date) -> str:
+def _format_picks_flights(signals: list[Signal], for_date: date) -> str:
+    """Telegram message for flight price alerts."""
+    lines: list[str] = [_header("flights", for_date), ""]
+
+    if not signals:
+        lines.append("No flight price alerts today.")
+        return "\n".join(lines)
+
+    for i, s in enumerate(signals, 1):
+        f = s.features
+        origin = _esc(str(f.get("origin", "?")))
+        dest = _esc(str(f.get("destination", "?")))
+        dep_date = _esc(str(f.get("departure_date", "?")))
+        price = f.get("price_usd", "?")
+        airline = _esc(str(f.get("airline", "?")))
+        stops = f.get("stops", "?")
+        subtype = _esc(str(f.get("signal_subtype", "price_drop")))
+        conf = float(s.confidence)
+        avg = f.get("rolling_avg_price")
+
+        lines.append(f"{i}. <b>{origin} &#8594; {dest}</b>  {dep_date}")
+        lines.append(f"   Price: <b>${price}</b>  ({airline}, {stops} stop{'s' if stops != 1 else ''})")
+        if avg:
+            lines.append(f"   Avg: ${avg:.0f}  |  Signal: {subtype}  |  Conf: {conf:.0%}")
+        else:
+            lines.append(f"   Signal: {subtype}  |  Conf: {conf:.0%}")
+        lines.append(f"   <code>{s.id}</code>")
+        lines.append("")
+
+    n = len(signals)
+    lines.append(f"{n} flight alert{'s' if n != 1 else ''}. "
+                 "Prices update daily &#8212; act within 7 days.")
+    return "\n".join(lines)
+
+
+def _format_results(signals: list[Signal], for_date: date, domain: str = "betting") -> str:
     lines: list[str] = [f"<b>&#128202; Sentinel results &#8212; {for_date}</b>", ""]
 
     # Partition by status.
@@ -70,25 +131,38 @@ def _format_results(signals: list[Signal], for_date: date) -> str:
 
     for i, s in enumerate(display, 1):
         f    = s.features
-        home = _esc(str(f.get("home_team", "?")))
-        away = _esc(str(f.get("away_team", "?")))
-        pick = _esc(str(f.get("pick", "?")))
+
+        if domain == "flights":
+            origin = _esc(str(f.get("origin", "?")))
+            dest = _esc(str(f.get("destination", "?")))
+            dep = _esc(str(f.get("departure_date", "?")))
+            label = f"{origin}-{dest}  {dep}"
+        else:
+            home = _esc(str(f.get("home_team", "?")))
+            away = _esc(str(f.get("away_team", "?")))
+            pick = _esc(str(f.get("pick", "?")))
+            label = f"<b>{pick}</b> ({home} vs {away})"
 
         if s.status == "void":
-            lines.append(f"{i}. &#8709; <b>{pick}</b> ({home} vs {away})")
+            lines.append(f"{i}. &#8709; {label}")
             lines.append("   Void")
         elif s.status == "resolved" and s.outcome is not None:
-            icon = "&#10003;" if s.outcome.was_correct else "&#10007;"   # ✓ / ✗
-            word = "Won" if s.outcome.was_correct else "Lost"
-            hs   = s.outcome.outcome_metadata.get("home_score")
-            as_  = s.outcome.outcome_metadata.get("away_score")
-            score = f" {as_}-{hs}" if hs is not None and as_ is not None else ""
-            lines.append(f"{i}. {icon} <b>{pick}</b> ({home} vs {away})")
-            lines.append(f"   {word}{score}")
+            icon = "&#10003;" if s.outcome.was_correct else "&#10007;"
+            word = "Correct" if s.outcome.was_correct else "Wrong"
+            if domain == "flights":
+                pct = s.outcome.outcome_metadata.get("price_change_pct", "?")
+                lines.append(f"{i}. {icon} {label}")
+                lines.append(f"   {word}  (price {pct:+.1f}%)" if isinstance(pct, float) else f"   {word}")
+            else:
+                hs  = s.outcome.outcome_metadata.get("home_score")
+                as_ = s.outcome.outcome_metadata.get("away_score")
+                score = f" {as_}-{hs}" if hs is not None and as_ is not None else ""
+                lines.append(f"{i}. {icon} {label}")
+                lines.append(f"   {word}{score}")
         lines.append("")
 
     if not display:
-        lines.append("No picks resolved yet.")
+        lines.append("No signals resolved yet.")
         lines.append("")
 
     total_resolved = len(resolved)
@@ -96,9 +170,9 @@ def _format_results(signals: list[Signal], for_date: date) -> str:
         win_rate = won_count / total_resolved
         lines.append(f"Day: {won_count}/{total_resolved} correct ({win_rate:.0%})")
     else:
-        lines.append("Day: no resolved picks yet")
+        lines.append("Day: no resolved signals yet")
 
-    lines.append(f"Pending: {len(pending)} pick{'s' if len(pending) != 1 else ''} "
+    lines.append(f"Pending: {len(pending)} signal{'s' if len(pending) != 1 else ''} "
                  "still unresolved")
     return "\n".join(lines)
 
@@ -124,13 +198,13 @@ class TelegramChannel:
 
     # -- public API --------------------------------------------------------- #
 
-    def send_picks(self, signals: list[Signal], for_date: date) -> None:
-        """Send today's +EV picks to every registered chat."""
-        self._broadcast(_format_picks(signals, for_date))
+    def send_picks(self, signals: list[Signal], for_date: date, domain: str = "betting") -> None:
+        """Send today's picks/alerts to every registered chat."""
+        self._broadcast(_format_picks(signals, for_date, domain=domain))
 
-    def send_results(self, signals: list[Signal], for_date: date) -> None:
-        """Send resolution summary (won/lost/void) to every registered chat."""
-        self._broadcast(_format_results(signals, for_date))
+    def send_results(self, signals: list[Signal], for_date: date, domain: str = "betting") -> None:
+        """Send resolution summary to every registered chat."""
+        self._broadcast(_format_results(signals, for_date, domain=domain))
 
     # -- internals ---------------------------------------------------------- #
 

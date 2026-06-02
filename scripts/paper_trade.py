@@ -1,24 +1,25 @@
 """Phase 0 paper-trading runner.
 
-Runs the full pipeline (ingest → model → signals) and prints today's picks. This
-is the Phase 0 deliverable: a real pick on screen, tracked on paper, no product
-yet. The goal is to validate the model shows positive ROI / break-even before
-building anything else.
+Runs the full pipeline (ingest -> model -> signals) and prints today's picks.
+Supports two domains via --domain: "betting" (default) and "flights".
 
 Usage:
     python -m scripts.paper_trade --mock                               # sample data, no network
-    python -m scripts.paper_trade                                      # live The Odds API
+    python -m scripts.paper_trade                                      # live The Odds API (betting)
+    python -m scripts.paper_trade --domain flights                     # live SerpAPI (flights)
+    python -m scripts.paper_trade --domain flights --mock              # flights mock, no network
     python -m scripts.paper_trade --resolve                            # resolve today's picks
     python -m scripts.paper_trade --date 2026-05-30 --resolve         # resolve a past date
     python -m scripts.paper_trade --notify                             # picks + Telegram message
     python -m scripts.paper_trade --resolve --date X --notify         # results + Telegram message
 
 Env (see .env.example):
-    ODDS_API_KEY           your The Odds API key
+    ODDS_API_KEY           your The Odds API key       (betting domain)
+    SERPAPI_KEY            your SerpAPI key            (flights domain, 100 req/mo free)
     DATABASE_URL           Supabase/Postgres URL, or omit for local SQLite
     SEASON                 MLB season year (default: current year)
-    TELEGRAM_BOT_TOKEN     optional — enables Telegram notifications
-    TELEGRAM_CHAT_ID       optional — target chat for notifications
+    TELEGRAM_BOT_TOKEN     optional -- enables Telegram notifications
+    TELEGRAM_CHAT_ID       optional -- target chat for notifications
 """
 
 from __future__ import annotations
@@ -41,6 +42,12 @@ from core.orchestrator import run_pipeline, run_resolution
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sentinel Phase 0 paper trader")
+    parser.add_argument(
+        "--domain",
+        default="betting",
+        choices=["betting", "flights"],
+        help="which adapter to run (default: betting)",
+    )
     parser.add_argument("--mock", action="store_true", help="use sample data, no network")
     parser.add_argument("--resolve", action="store_true", help="resolve past picks")
     parser.add_argument(
@@ -56,66 +63,55 @@ def main() -> None:
                              "ignored with --mock)")
     args = parser.parse_args()
 
-    # Show orchestrator INFO messages when requested (or always in mock mode so
-    # upsert behaviour is clearly visible during local testing).
     if args.verbose or args.mock:
-        logging.basicConfig(level=logging.INFO,
-                            format="  [orchestrator] %(message)s")
+        logging.basicConfig(level=logging.INFO, format="  [orchestrator] %(message)s")
 
     today = datetime.now(timezone.utc).date()
-
-    from adapters.betting.adapter import BettingAdapter
-
-    season = int(os.getenv("SEASON", today.year))
-    events_override = None
-    mlb_runs_override = None
-    if args.mock:
-        from scripts.sample_data import sample_events, sample_mlb_runs
-        events_override = sample_events()
-        mlb_runs_override = sample_mlb_runs()
-
-    adapter = BettingAdapter(
-        api_key=os.getenv("ODDS_API_KEY", ""),
-        season=season,
-        events_override=events_override,
-        mlb_runs_override=mlb_runs_override,
-    )
-
-    # Whether to fire notifications this run.
     do_notify = args.notify and not args.mock
 
     init_db()
     with SessionLocal() as session:
+        # ------------------------------------------------------------------ #
+        # Adapter selection                                                   #
+        # ------------------------------------------------------------------ #
+        if args.domain == "flights":
+            adapter = _build_flights_adapter(args, session)
+        else:
+            adapter = _build_betting_adapter(args)
+
+        # ------------------------------------------------------------------ #
+        # Past-date mode: skip pipeline, show/resolve for target date         #
+        # ------------------------------------------------------------------ #
         if args.date:
-            # Past-date mode: skip pipeline, resolve picks for the target date.
             target_date = date.fromisoformat(args.date)
             if args.resolve:
                 n = run_resolution(session, adapter)
                 print(f"Resolved {n} past signal(s).\n")
-                _verify_outcomes_supabase(session, target_date)
+                if args.domain == "betting":
+                    _verify_outcomes_supabase(session, target_date)
                 if do_notify:
-                    _send_results_notification(session, target_date)
-            _print_by_date(session, target_date, show_outcomes=True)
+                    _send_results_notification(session, target_date, args.domain)
+            _print_by_date(session, target_date, args.domain, show_outcomes=True)
             return
 
         # ------------------------------------------------------------------ #
         # Live / mock ingestion run                                           #
         # ------------------------------------------------------------------ #
         if not args.mock:
-            # Fetch once, cache, pass to pipeline so we don't burn quota twice.
-            print(f"\nFetching live odds from The Odds API ...")
+            print(f"\nFetching live data ({args.domain}) ...")
             raw_events = adapter.fetch_raw_events()
-            adapter._events_override = raw_events   # cache for pipeline
+            # Cache fetched events so the pipeline reuses them.
+            adapter._events_override = raw_events
 
-            _print_ingestion_summary(raw_events)
+            _print_ingestion_summary(raw_events, args.domain)
 
-            # Full per-event model diagnostic before writing anything.
-            evals = adapter.evaluate_events(raw_events)
-            _print_model_diagnostic(evals)
-
-            # Show API quota consumed by this run.
-            quota = adapter._client.last_quota if adapter._client else {}
-            _print_quota(quota)
+            if args.domain == "betting":
+                evals = adapter.evaluate_events(raw_events)
+                _print_model_diagnostic(evals)
+                quota = adapter._client.last_quota if adapter._client else {}
+                _print_quota(quota)
+            else:
+                _print_flights_price_summary(raw_events)
 
         run = run_pipeline(session, adapter)
 
@@ -123,43 +119,79 @@ def main() -> None:
             n = run_resolution(session, adapter)
             print(f"Resolved {n} past signal(s).\n")
 
-        signals = _print_by_run(session, run.id, show_outcomes=args.resolve)
+        signals = _print_by_run(session, run.id, args.domain, show_outcomes=args.resolve)
 
         if do_notify:
-            _send_picks_notification(signals, today)
+            _send_picks_notification(signals, today, args.domain)
             if args.resolve:
-                _send_results_notification(session, today)
+                _send_results_notification(session, today, args.domain)
 
         if not args.mock:
-            _verify_supabase(session, today)
+            _verify_supabase(session, today, args.domain)
 
 
 # --------------------------------------------------------------------------- #
-# Live-run diagnostic helpers                                                  #
+# Adapter builders                                                             #
 # --------------------------------------------------------------------------- #
 
-def _print_ingestion_summary(raw_events: list) -> None:
-    by_sport: Counter = Counter()
+def _build_betting_adapter(args):
+    from adapters.betting.adapter import BettingAdapter
+    today = datetime.now(timezone.utc).date()
+    season = int(os.getenv("SEASON", today.year))
+    events_override = None
+    mlb_runs_override = None
+    if args.mock:
+        from scripts.sample_data import sample_events, sample_mlb_runs
+        events_override = sample_events()
+        mlb_runs_override = sample_mlb_runs()
+    return BettingAdapter(
+        api_key=os.getenv("ODDS_API_KEY", ""),
+        season=season,
+        events_override=events_override,
+        mlb_runs_override=mlb_runs_override,
+    )
+
+
+def _build_flights_adapter(args, session):
+    from adapters.flights.adapter import FlightsAdapter
+    events_override = None
+    if args.mock:
+        from scripts.sample_data import sample_flights_events_serpapi
+        events_override = sample_flights_events_serpapi()
+    return FlightsAdapter(
+        serpapi_key=os.getenv("SERPAPI_KEY", ""),
+        session=session,
+        events_override=events_override,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Ingestion diagnostic helpers                                                 #
+# --------------------------------------------------------------------------- #
+
+def _print_ingestion_summary(raw_events: list, domain: str) -> None:
+    prefix_counter: Counter = Counter()
     for ev in raw_events:
-        sport = ev.event_key.split("::", 1)[0]
-        by_sport[sport] += 1
-    print(f"\n  Ingested {len(raw_events)} raw event(s):")
-    for sport, n in sorted(by_sport.items()):
-        print(f"    {sport}: {n}")
+        prefix = ev.event_key.split("::", 1)[0]
+        prefix_counter[prefix] += 1
+    print(f"\n  Ingested {len(raw_events)} raw event(s) [{domain}]:")
+    for prefix, n in sorted(prefix_counter.items()):
+        print(f"    {prefix}: {n}")
 
 
 def _print_model_diagnostic(evals: list[dict[str, Any]]) -> None:
+    """Betting-specific per-event model evaluation output."""
     print(f"\n{'='*64}")
-    print(f"  MODEL DIAGNOSTIC — {len(evals)} event(s) evaluated")
+    print(f"  MODEL DIAGNOSTIC -- {len(evals)} event(s) evaluated")
     print(f"{'='*64}")
     for ev in evals:
         tag = ev["sport"].split("_")[0]
         print(f"\n  {ev['match']}  ({tag})  {ev['game_time'][:10]}")
         if not ev["has_odds"]:
-            print(f"    SKIP — {ev['skip_reason']}")
+            print(f"    SKIP -- {ev['skip_reason']}")
             continue
         if not ev["supported"]:
-            print(f"    SKIP — {ev['skip_reason']}")
+            print(f"    SKIP -- {ev['skip_reason']}")
             continue
         for sel in ev["selections"]:
             status = "PASS" if sel["passes"] else "skip"
@@ -181,8 +213,46 @@ def _print_quota(quota: dict[str, str]) -> None:
     print(f"  API quota:  {used} used / {remaining} remaining this month\n")
 
 
+def _print_flights_price_summary(raw_events: list) -> None:
+    """Show a compact table of routes and prices found in this run."""
+    from adapters.flights.model import normalize_price, source_from_event_key
+    if not raw_events:
+        print("  No flight data returned.")
+        return
+    print(f"\n  Flight prices fetched ({len(raw_events)} departure date(s)):")
+    # Group by route key (parts[1] of event_key); departure date from parts[2]
+    by_route: dict[str, list[tuple[str, float]]] = {}
+    for ev in raw_events:
+        parts = ev.event_key.split("::")
+        if len(parts) < 3:
+            continue
+        route_key = parts[1]
+        dep = parts[2]
+        src = source_from_event_key(ev.event_key)
+        try:
+            price = normalize_price(ev.payload, src)
+        except ValueError:
+            continue
+        by_route.setdefault(route_key, []).append((dep, price))
+    for route, entries in sorted(by_route.items()):
+        entries.sort()  # sort by departure date
+        origin, _, dest = route.partition("-")
+        prices = [p for _, p in entries]
+        print(f"\n    {origin} -> {dest}  ({len(entries)} departure date(s))")
+        print(f"    Price range: ${min(prices):.0f} -- ${max(prices):.0f} USD")
+        for dep, price in entries[:5]:
+            print(f"      {dep}  ${price:.0f}")
+        if len(entries) > 5:
+            print(f"      ... ({len(entries) - 5} more)")
+    print(f"\n  SerpAPI quota this run: {len(raw_events)} request(s) of 100/month (free tier)")
+
+
+# --------------------------------------------------------------------------- #
+# Supabase verification helpers                                                #
+# --------------------------------------------------------------------------- #
+
 def _verify_outcomes_supabase(session, target_date: date) -> None:
-    """After resolution: print signal_outcomes stats for target_date."""
+    """After resolution: print signal_outcomes stats for target_date (betting)."""
     rows = session.scalars(
         select(SignalOutcome)
         .join(Signal, SignalOutcome.signal_id == Signal.id)
@@ -216,21 +286,38 @@ def _verify_outcomes_supabase(session, target_date: date) -> None:
     print()
 
 
-def _verify_supabase(session, today: date) -> None:
-    """Query Supabase directly to confirm signals were persisted."""
-    from datetime import timedelta
+def _verify_supabase(session, today: date, domain: str) -> None:
+    """Query the DB to confirm signals were persisted for today, filtered by domain."""
+    from core.models import Domain
     tomorrow = today + timedelta(days=1)
+
+    # Both queries join through domain_id so betting and flights signals don't bleed
+    # into each other's Supabase check output.
+    domain_filter = (
+        select(Signal.id)
+        .join(Domain, Signal.domain_id == Domain.id)
+        .where(
+            Signal.valid_for_date.in_([today, tomorrow]),
+            Domain.slug == domain,
+        )
+        .scalar_subquery()
+    )
+
     count = session.scalar(
         select(func.count(Signal.id)).where(
-            Signal.valid_for_date.in_([today, tomorrow])
+            Signal.valid_for_date.in_([today, tomorrow]),
+            Signal.id.in_(domain_filter),
         )
     )
-    print(f"  Supabase check: {count} signal(s) stored for {today} / {tomorrow}")
+    print(f"  Supabase check [{domain}]: {count} signal(s) stored for {today} / {tomorrow}")
 
-    # Print UUIDs so user can spot-check in the Supabase dashboard.
     sigs = session.scalars(
         select(Signal)
-        .where(Signal.valid_for_date.in_([today, tomorrow]))
+        .join(Domain, Signal.domain_id == Domain.id)
+        .where(
+            Signal.valid_for_date.in_([today, tomorrow]),
+            Domain.slug == domain,
+        )
         .order_by(Signal.created_at.desc())
         .limit(20)
     ).all()
@@ -238,7 +325,13 @@ def _verify_supabase(session, today: date) -> None:
         print("  Signal UUIDs in DB:")
         for s in sigs:
             f = s.features
-            print(f"    {s.id}  {f.get('match','?')}  pick={f.get('pick','?')}")
+            if domain == "flights":
+                route = f"{f.get('origin','?')}->{f.get('destination','?')}"
+                dep = f.get("departure_date", "?")
+                subtype = f.get("signal_subtype", "?")
+                print(f"    {s.id}  {route}  dep={dep}  type={subtype}  ${f.get('price_usd','?')}")
+            else:
+                print(f"    {s.id}  {f.get('match','?')}  pick={f.get('pick','?')}")
     print()
 
 
@@ -246,18 +339,16 @@ def _verify_supabase(session, today: date) -> None:
 # Notification helpers                                                         #
 # --------------------------------------------------------------------------- #
 
-def _send_picks_notification(signals: list[Signal], for_date: date) -> None:
-    """Fire the picks Telegram message. Warns on failure — never aborts the run."""
+def _send_picks_notification(signals: list[Signal], for_date: date, domain: str) -> None:
     from core.output import notify_picks
     try:
-        notify_picks(signals, for_date)
-        print(f"  Telegram picks notification sent ({len(signals)} pick(s)).")
+        notify_picks(signals, for_date, domain=domain)
+        print(f"  Telegram picks notification sent ({len(signals)} signal(s)).")
     except Exception as exc:
         print(f"  Telegram notification failed (picks): {exc}")
 
 
-def _send_results_notification(session, for_date: date) -> None:
-    """Query the DB for today's full signal slate and send the results message."""
+def _send_results_notification(session, for_date: date, domain: str) -> None:
     from core.output import notify_results
     signals = list(session.scalars(
         select(Signal)
@@ -266,7 +357,7 @@ def _send_results_notification(session, for_date: date) -> None:
         .order_by(Signal.expected_value.desc())
     ).all())
     try:
-        notify_results(signals, for_date)
+        notify_results(signals, for_date, domain=domain)
         resolved = sum(1 for s in signals if s.status == "resolved")
         print(f"  Telegram results notification sent ({resolved} resolved).")
     except Exception as exc:
@@ -278,20 +369,9 @@ def _send_results_notification(session, for_date: date) -> None:
 # --------------------------------------------------------------------------- #
 
 def _print_by_run(
-    session, run_id: uuid.UUID, *, show_outcomes: bool = False
+    session, run_id: uuid.UUID, domain: str, *, show_outcomes: bool = False
 ) -> list[Signal]:
-    """Show today's signals touched by a specific model run.
-
-    "Touched" means either inserted or upserted during this run (model_run_id
-    matches). If nothing was touched (odds unchanged, all below noise threshold),
-    fall back to showing today's existing signals by date — so a no-op repeat
-    run still displays picks.
-
-    Signals for future dates are stored but never shown here; the user always
-    sees only games starting today.
-
-    Returns the list of Signal objects that were rendered (used for notifications).
-    """
+    """Show signals touched by this model run. Falls back to date query for betting."""
     today = datetime.now(timezone.utc).date()
 
     signals = list(session.scalars(
@@ -301,21 +381,30 @@ def _print_by_run(
         .order_by(Signal.expected_value.desc())
     ).all())
 
-    if not signals:
-        # Nothing was inserted or upserted for today — odds were unchanged.
-        # Show today's existing slate so the output is never empty after a stable run.
+    if not signals and domain == "betting":
+        # Betting fallback: show today's existing slate even when odds are unchanged.
+        # Filter to betting-domain signals only to avoid mixing in flight alerts.
+        from core.models import Domain, ModelRun
         signals = list(session.scalars(
             select(Signal)
-            .where(Signal.valid_for_date == today)
+            .join(ModelRun, Signal.model_run_id == ModelRun.id)
+            .join(Domain, ModelRun.domain_id == Domain.id)
+            .where(Signal.valid_for_date == today, Domain.slug == "betting")
             .options(selectinload(Signal.outcome))
             .order_by(Signal.expected_value.desc())
         ).all())
 
-    _render(signals, today, show_outcomes=show_outcomes)
+    if domain == "flights":
+        _render_flights(signals, today, show_outcomes=show_outcomes)
+    else:
+        _render_betting(signals, today, show_outcomes=show_outcomes)
+
     return signals
 
 
-def _print_by_date(session, target_date: date, *, show_outcomes: bool = False) -> None:
+def _print_by_date(
+    session, target_date: date, domain: str, *, show_outcomes: bool = False
+) -> None:
     """Show all signals with valid_for_date == target_date."""
     signals = session.scalars(
         select(Signal)
@@ -323,10 +412,18 @@ def _print_by_date(session, target_date: date, *, show_outcomes: bool = False) -
         .options(selectinload(Signal.outcome))
         .order_by(Signal.expected_value.desc())
     ).all()
-    _render(signals, target_date, show_outcomes=show_outcomes)
+
+    if domain == "flights":
+        _render_flights(list(signals), target_date, show_outcomes=show_outcomes)
+    else:
+        _render_betting(list(signals), target_date, show_outcomes=show_outcomes)
 
 
-def _render(signals: list[Signal], label: date, *, show_outcomes: bool) -> None:
+# --------------------------------------------------------------------------- #
+# Domain-specific renderers                                                    #
+# --------------------------------------------------------------------------- #
+
+def _render_betting(signals: list[Signal], label: date, *, show_outcomes: bool) -> None:
     print(f"\n{'='*64}\n  SENTINEL - value bets for {label}\n{'='*64}")
     if not signals:
         print("  No +EV opportunities found.")
@@ -345,7 +442,7 @@ def _render(signals: list[Signal], label: date, *, show_outcomes: bool) -> None:
             f"Confidence: {s.confidence:.1%}",
         ]
         if show_outcomes:
-            lines.append(f"    Result:      {_outcome_line(s)}")
+            lines.append(f"    Result:      {_betting_outcome_line(s)}")
         print("\n".join(lines))
 
     print(f"\n{'='*64}")
@@ -353,9 +450,62 @@ def _render(signals: list[Signal], label: date, *, show_outcomes: bool) -> None:
     print(f"{'='*64}\n")
 
 
-def _outcome_line(signal: Signal) -> str:
+def _render_flights(signals: list[Signal], label: date, *, show_outcomes: bool) -> None:
+    print(f"\n{'='*64}\n  SENTINEL - flight alerts for {label}\n{'='*64}")
+    if not signals:
+        print("  No flight price alerts.")
+        print("  (On first run this is expected -- accumulating price history.)")
+        print(f"{'='*64}\n")
+        return
+
+    # Group by signal_subtype for clarity
+    by_type: dict[str, list[Signal]] = {}
+    for s in signals:
+        subtype = s.features.get("signal_subtype", "unknown")
+        by_type.setdefault(subtype, []).append(s)
+
+    for subtype, sigs in by_type.items():
+        print(f"\n  -- {subtype.replace('_', ' ').upper()} ({len(sigs)}) --")
+        for s in sigs:
+            f = s.features
+            origin = f.get("origin", "?")
+            dest = f.get("destination", "?")
+            dep = f.get("departure_date", "?")
+            price = f.get("price_usd", "?")
+            airline = f.get("airline", "?")
+            stops = f.get("stops", "?")
+            dur = f.get("duration_hours", "?")
+            avg = f.get("rolling_avg_price")
+            obs = f.get("observations_count", 0)
+            google_assessment = f.get("google_assessment")
+            typical_range = f.get("typical_range")
+
+            # Show Google's price assessment when the fast-path fired;
+            # fall back to rolling-average context (avg, n) otherwise.
+            if google_assessment and typical_range and len(typical_range) == 2:
+                signal_context = (
+                    f"  (Google: low -- typical ${int(typical_range[0])}--${int(typical_range[1])})"
+                )
+            elif avg:
+                signal_context = f"  (avg ${avg:.0f}, n={obs})"
+            else:
+                signal_context = f"  (n={obs})"
+            print(f"\n  {origin} -> {dest}  dep {dep}")
+            print(f"    Price:       ${price}  ({airline}, {stops} stop(s), {dur}h)")
+            print(f"    Signal:      {subtype}{signal_context}")
+            print(f"    EV:          {s.expected_value:+.1%}   Confidence: {s.confidence:.1%}")
+            if show_outcomes:
+                print(f"    Result:      {_flights_outcome_line(s)}")
+            print(f"    UUID:        {s.id}")
+
+    print(f"\n{'='*64}")
+    print(f"  {len(signals)} alert(s). Prices update daily -- act within 7 days.")
+    print(f"{'='*64}\n")
+
+
+def _betting_outcome_line(signal: Signal) -> str:
     if signal.status == "void":
-        return "∅  void  (postponed / suspended / cancelled)"
+        return "void  (postponed / suspended / cancelled)"
     if signal.status == "resolved" and signal.outcome is not None:
         o = signal.outcome
         icon = "[W]" if o.was_correct else "[L]"
@@ -366,7 +516,20 @@ def _outcome_line(signal: Signal) -> str:
         clv = o.outcome_metadata.get("clv")
         clv_str = f"  CLV: {clv:+.1%}" if clv is not None else ""
         return f"{icon}  {label}{score}{clv_str}"
-    return "—  pending"
+    return "--  pending"
+
+
+def _flights_outcome_line(signal: Signal) -> str:
+    if signal.status == "void":
+        reason = signal.outcome.outcome_metadata.get("void_reason", "") if signal.outcome else ""
+        return f"void  ({reason})" if reason else "void"
+    if signal.status == "resolved" and signal.outcome is not None:
+        o = signal.outcome
+        icon = "[CORRECT]" if o.was_correct else "[WRONG]"
+        pct = o.outcome_metadata.get("price_change_pct", "?")
+        pct_str = f"{pct:+.1f}%" if isinstance(pct, float) else str(pct)
+        return f"{icon}  price changed {pct_str} after 7 days"
+    return "--  pending (resolves in 7 days)"
 
 
 if __name__ == "__main__":
