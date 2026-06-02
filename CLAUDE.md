@@ -72,6 +72,31 @@ Built and working:
   Telegram output — future-dated signals stored but never surfaced early
 - **Personal tracking:** `scripts/track.py follow <uuid> <stake>` and
   `scripts/track.py pnl` — reads `UserSignalView` stake/pnl/followed
+- **Backtest:** `scripts/backtest.py` — MLB historical backtesting (Retrosheet
+  2025, MLB Stats API 2026+), point-in-time stats, confidence band output;
+  results saved to `scripts/backtest_results*.csv` (gitignored)
+- **Flights adapter:** SerpAPI Google Flights, EZE→MAD default route
+  - **Flexible mode** (default): auto-generates 5 weekly departure dates
+    from today+7, interval 7 days — zero config needed
+  - **Range mode:** `--range DATE_FROM DATE_TO` distributes 5 dates uniformly
+    across a specific calendar range (e.g. monitoring August for a trip)
+  - Both modes can run simultaneously on the same route;
+    `get_dates_to_monitor()` returns the union, deduped and sorted
+  - **`price_drop` fast-path:** fires immediately when Google's
+    `price_insights` rates the price "low" and it is at/below the typical
+    range floor — no prior observations needed
+  - **`monthly_minimum`:** fires when current price is the cheapest seen
+    this month for the route across all departure dates
+  - Domain filter: flights signals never bleed into betting output and
+    vice-versa; all signal queries join `Signal → Domain` and filter by slug
+- **Two domains running in parallel:** betting + flights, isolated by
+  `domain_id`; `core/` has zero domain-specific knowledge
+
+Live paper trading status (update as results come in):
+- Started: 2026-05-31
+- Picks resolved: 8 (3W 5L, 37.5% — sample too small to conclude)
+- Backtest (May 2026, 419 games): 58.7% accuracy, well-calibrated
+- Gate to Phase 1: 30+ resolved picks, win rate > 53%
 
 Intentionally deferred — do not implement without discussion:
 - **Soccer / World Cup model:** deferred; MLB has 162 games/season, faster
@@ -83,6 +108,10 @@ Intentionally deferred — do not implement without discussion:
   preferences — Phase 1
 - **`/refresh` command for premium users:** Phase 1
 - **Bankroll / staking suggestions:** deferred
+- **Flights: additional routes beyond EZE→MAD** — configure via
+  `domains.config` jsonb; deferred to Phase 1
+- **Flights resolution:** re-fetch prices after 7 days to verify `was_correct`;
+  stub exists in `adapter.py`, wiring deferred to Phase 1
 
 ## Recorded design decisions
 
@@ -109,6 +138,28 @@ Intentionally deferred — do not implement without discussion:
 - Soccer / World Cup model deferred — static `WORLD_CUP_RATINGS` map in
   `adapters/betting/stats.py` is a placeholder; without a real stats feed it
   just reads the market back and finds no genuine edge.
+- **SerpAPI Google Flights replaces Tequila/Amadeus** — both shut down their
+  free/self-service tiers in early 2026. SerpAPI is the sole flights source.
+- **Flights uses EZE (Ezeiza) not BUE** — Google Flights requires specific
+  airport IATA codes, not city codes.
+- **Range mode distributes dates uniformly** — `dates_for_range()` spaces n
+  points evenly so first == `date_from` and last == `date_to`; simpler and
+  more predictable than weighted distributions.
+- **Both monitoring modes (flexible + range) can be active simultaneously**
+  on the same route; `get_dates_to_monitor()` returns the union, deduped and
+  sorted — quota cost is always `len(result)` SerpAPI requests.
+- **`price_drop` fast-path bypasses `min_observations`** — Google's
+  `price_insights` model has far more price history than our own observations,
+  so a "low" rating with price ≤ typical floor fires immediately (n=0 ok).
+- **Domain filter added to all signal queries** — `_print_by_date`,
+  `_render_betting`, `_verify_supabase`, and `_verify_outcomes_supabase` all
+  join `Signal → Domain` and filter by `slug`; prevents cross-domain crashes
+  (e.g. `KeyError: 'match'` when flights signals reach the betting renderer).
+- `run_resolution` in the orchestrator is already domain-filtered by
+  `domain_id` via the adapter's `domain_slug` — confirmed, no change needed.
+- **Do not tune model hyperparameters until 30+ resolved picks** — 8 picks is
+  statistically irrelevant; the backtest (419 games) is the reliable signal for
+  calibration direction.
 
 ## Conventions
 
@@ -125,18 +176,32 @@ Intentionally deferred — do not implement without discussion:
   `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 - `SENTINEL_USER_ID` in `.env` identifies the Phase 0 user in all scripts.
 - Validate model math in isolation before wiring it to the DB or live APIs.
+- `--range DATE_FROM DATE_TO` overrides route config for flights range mode
+  testing without touching Supabase (pairs with `--domain flights`).
+- `--domain flights` selects the flights adapter throughout all scripts.
+- **SerpAPI quota:** 5 requests/run by default (one per monitored date),
+  100/month free tier — quota used is logged on every run and recorded in
+  `model_runs.hyperparams.serpapi_quota_used`.
+- Backtest results are saved to `scripts/backtest_results*.csv` (gitignored).
 
 ## Phase 0 remaining work
 
-**Gate to Phase 1:** model shows positive ROI or break-even after 2–3 weeks
-of live paper trading on MLB. Track daily with `python -m scripts.track pnl`.
+**Gate to Phase 1:** 30+ resolved picks with win rate > 53%.
+Currently at 8 resolved picks (3W 5L). Running daily.
 
-Remaining Phase 0 work:
-- Run `daily_picks` → follow signals → `daily_resolve` every day for 2–3 weeks
-- Monitor win rate and P&L trend via `scripts/track.py pnl`
-- If model validates → start Phase 1 (FastAPI + Next.js + Railway)
-- If model needs work → tune `min_ev` / `min_confidence` thresholds or improve
-  the MLB stats source before moving to Phase 1
+Decision tree at 30+ picks:
+- Win rate **> 53%** → start Phase 1
+- Win rate **45–53%** → tune `min_ev` / `min_confidence` thresholds
+- Win rate **< 45%** → investigate systematic model issue first
+
+Phase 1 will include:
+- FastAPI service (`api/` scaffold already exists)
+- Railway deployment (Python service + Telegram webhook)
+- Next.js web app (auth, dashboard, Stripe billing)
+- Alembic migrations replacing `ALTER TABLE` fallback
+- `users` table expansion (`telegram_chat_id`, `stripe_customer_id`,
+  preferences, timezone)
+- Multi-user tracking replacing `SENTINEL_USER_ID` shortcut
 
 ## What to ask before doing
 
