@@ -9,12 +9,6 @@
 
 name: Daily Resolution
 
-# Opt into the Node.js 24 runtime used by GitHub-hosted actions.
-# Suppresses the deprecation warning emitted when actions still ship a
-# node20 entry-point but the runner supports node24.
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 on:
   schedule:
     - cron: '0 6 * * *'
@@ -24,6 +18,12 @@ on:
         description: 'Date to resolve (YYYY-MM-DD). Leave blank to resolve yesterday.'
         required: false
         default: ''
+
+# Opt into the Node.js 24 runtime used by GitHub-hosted actions.
+# Suppresses the deprecation warning emitted when actions still ship a
+# node20 entry-point but the runner supports node24.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   resolve:
