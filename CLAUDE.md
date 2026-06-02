@@ -160,6 +160,10 @@ Intentionally deferred — do not implement without discussion:
 - **Do not tune model hyperparameters until 30+ resolved picks** — 8 picks is
   statistically irrelevant; the backtest (419 games) is the reliable signal for
   calibration direction.
+- **`HOME_ADVANTAGE = 1.04` chosen to match empirical MLB home win rate (~53%).**
+  At 1.10 the model generates 72.8% home picks and suppresses away value. Backtest
+  confirms overall accuracy is insensitive to this parameter (57.8–58.2% across
+  HA=1.00–1.10); the fix improves calibration without sacrificing performance.
 
 ## Conventions
 
@@ -193,6 +197,15 @@ Decision tree at 30+ picks:
 - Win rate **> 53%** → start Phase 1
 - Win rate **45–53%** → tune `min_ev` / `min_confidence` thresholds
 - Win rate **< 45%** → investigate systematic model issue first
+
+**Pending model fix (apply at the 30-pick gate, not before):**
+- Change `HOME_ADVANTAGE` in `adapters/betting/stats.py` from `1.10` → `1.04`
+- Reason: backtested on 419 games — HA=1.10 generates 72.8% home picks vs the
+  expected ~53% empirical MLB rate. HA=1.04 matches the base rate and recovers
+  away-team picks (away accuracy was 61.4% in backtest) without changing overall
+  accuracy (57.8% at 1.04 vs 58.0% at 1.10).
+- **Do NOT apply before 30 resolved live picks** — live sample is noise.
+- After applying: monitor that away-team picks start appearing within 3 days.
 
 Phase 1 will include:
 - FastAPI service (`api/` scaffold already exists)
