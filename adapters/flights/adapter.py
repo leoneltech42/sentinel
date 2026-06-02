@@ -36,7 +36,7 @@ from adapters.base import (
     ResolvableSignal,
     SignalData,
 )
-from adapters.flights.ingestion import SerpAPIFlightsClient, next_n_dates
+from adapters.flights.ingestion import SerpAPIFlightsClient
 from adapters.flights.model import (
     check_monthly_minimum,
     check_price_drop,
@@ -102,25 +102,27 @@ class FlightsAdapter(Adapter):
 
     def hyperparams(self) -> dict[str, Any]:
         # Compute quota this run: one request per monitored date per route.
-        quota_used = sum(
-            len(r.monitored_dates) if r.monitored_dates else 5
-            for r in self._routes
-        )
+        # get_dates_to_monitor() merges flexible + range modes and deduplicates.
+        route_infos = []
+        total_dates = 0
+        for r in self._routes:
+            dates = r.get_dates_to_monitor()
+            total_dates += len(dates)
+            route_infos.append({
+                "origin": r.origin,
+                "destination": r.destination,
+                "monitoring_mode": r.monitoring_mode(),
+                "dates_this_run": dates,
+                "max_stops": r.max_stops,
+            })
         return {
             "price_drop_threshold": _PRICE_DROP_THRESHOLD,
             "min_observations": _MIN_OBSERVATIONS,
             "resolution_days": _RESOLUTION_DAYS,
             "source": "serpapi",
-            "serpapi_quota_used": quota_used,
-            "routes": [
-                {
-                    "origin": r.origin,
-                    "destination": r.destination,
-                    "monitored_dates": r.monitored_dates or next_n_dates(5),
-                    "max_stops": r.max_stops,
-                }
-                for r in self._routes
-            ],
+            "serpapi_quota_used": total_dates,
+            "total_dates_this_run": total_dates,
+            "routes": route_infos,
         }
 
     # ------------------------------------------------------------------ #

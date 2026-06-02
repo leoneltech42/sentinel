@@ -8,6 +8,7 @@ Usage:
     python -m scripts.paper_trade                                      # live The Odds API (betting)
     python -m scripts.paper_trade --domain flights                     # live SerpAPI (flights)
     python -m scripts.paper_trade --domain flights --mock              # flights mock, no network
+    python -m scripts.paper_trade --domain flights --range 2026-08-01 2026-08-31  # range mode
     python -m scripts.paper_trade --resolve                            # resolve today's picks
     python -m scripts.paper_trade --date 2026-05-30 --resolve         # resolve a past date
     python -m scripts.paper_trade --notify                             # picks + Telegram message
@@ -61,6 +62,16 @@ def main() -> None:
     parser.add_argument("--notify", action="store_true",
                         help="send Telegram notification (requires TELEGRAM_* env vars; "
                              "ignored with --mock)")
+    parser.add_argument(
+        "--range",
+        nargs=2,
+        metavar=("DATE_FROM", "DATE_TO"),
+        default=None,
+        help="flights only: monitor a specific calendar range instead of (or in addition to) "
+             "flexible weekly dates. Format: YYYY-MM-DD YYYY-MM-DD. "
+             "Activates range mode on the default EZE->MAD route (flexible mode disabled). "
+             "Example: --range 2026-08-01 2026-08-31",
+    )
     args = parser.parse_args()
 
     if args.verbose or args.mock:
@@ -153,15 +164,35 @@ def _build_betting_adapter(args):
 
 
 def _build_flights_adapter(args, session):
+    """Build the FlightsAdapter from CLI args.
+
+    --range DATE_FROM DATE_TO activates range mode on the default EZE->MAD route
+    with flexible mode disabled.  Without --range the adapter uses its default
+    route config (flexible mode: 5 weekly dates from today+7).
+    """
     from adapters.flights.adapter import FlightsAdapter
     events_override = None
+    routes_override = None
     if args.mock:
         from scripts.sample_data import sample_flights_events_serpapi
         events_override = sample_flights_events_serpapi()
+    if getattr(args, "range", None):
+        from adapters.flights.routes import RouteConfig
+        date_from, date_to = args.range
+        routes_override = [
+            RouteConfig(
+                origin="EZE",
+                destination="MAD",
+                monitor_flexible=False,
+                range_date_from=date_from,
+                range_date_to=date_to,
+            )
+        ]
     return FlightsAdapter(
         serpapi_key=os.getenv("SERPAPI_KEY", ""),
         session=session,
         events_override=events_override,
+        routes_override=routes_override,
     )
 
 

@@ -30,7 +30,7 @@ from datetime import date, datetime, timezone
 import requests
 
 from adapters.base import RawEventData
-from adapters.flights.routes import RouteConfig, next_n_dates
+from adapters.flights.routes import RouteConfig
 
 _DEFAULT_TIMEOUT = 30
 _SERPAPI_BASE = "https://serpapi.com/search"
@@ -61,18 +61,25 @@ class SerpAPIFlightsClient:
     ) -> list[RawEventData]:
         """Fetch all monitored departure dates for each route.
 
-        For each route, the dates to search come from ``route.monitored_dates``
-        (if non-empty) or from ``next_n_dates(5)`` (5 weekly dates from today+7).
-        One API call is made per date.  Errors on individual dates are logged and
-        skipped so one failed request never aborts the run.
+        Dates come from ``route.get_dates_to_monitor()``, which combines flexible
+        mode (n weekly dates from today+7) and range mode (n dates across a
+        calendar range) based on the route's configuration.  One API call is made
+        per date.  Errors on individual dates are logged and skipped so one failed
+        request never aborts the run.
 
         Args:
-            routes:      Configured routes (origin, destination, monitored_dates).
+            routes:      Configured routes (origin, destination, mode settings).
             search_date: Date of this search run (used only for logging).
         """
         events: list[RawEventData] = []
         for route in routes:
-            dates_to_check = route.monitored_dates if route.monitored_dates else next_n_dates(5)
+            dates_to_check = route.get_dates_to_monitor()
+            mode = route.monitoring_mode()
+            logging.info(
+                "SerpAPI: %s->%s  mode=%s  dates=%d  %s",
+                route.origin, route.destination, mode,
+                len(dates_to_check), dates_to_check,
+            )
             fetched = 0
             for dep_date_str in dates_to_check:
                 result = self.search_specific_date(
