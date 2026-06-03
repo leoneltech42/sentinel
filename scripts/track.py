@@ -270,11 +270,19 @@ def _cmd_global(session) -> None:
     """System-wide P&L across all resolved betting signals.
 
     No user context required — this is the full model scorecard.
-    Net units assumes 1 unit staked per pick:
-      won:  profit = actual_value - 1  (actual_value is the odd paid)
+
+    Flat ROI: 1 unit staked per pick regardless of sizing.
+      won:  profit = actual_value - 1  (actual_value is the decimal odd paid)
       lost: profit = -1
       void: profit = 0 (stake returned, excluded from win-rate calc)
-    ROI = net_units / resolved_count * 100
+      ROI  = net_units / resolved_count * 100
+
+    Kelly ROI: uses kelly_units stored in signal.features.
+      won:  profit = kelly_u * (actual_value - 1)
+      lost: profit = -kelly_u
+      void: profit = 0
+      ROI  = net_kelly / total_staked_kelly * 100
+    Signals without kelly_units (stored before 2026-06-03) fall back to 1.0u.
     """
     today = datetime.now(timezone.utc).date()
 
@@ -294,13 +302,32 @@ def _cmd_global(session) -> None:
     won      = [s for s in resolved if s.outcome and s.outcome.was_correct]
     lost     = [s for s in resolved if s.outcome and not s.outcome.was_correct]
 
-    # Net units (1u/pick): void counts as 0 (stake back)
-    net_units = 0.0
+    # -- Flat ROI (1u/pick) ----------------------------------------------------
+    net_flat = 0.0
     for s in resolved:
         if s.outcome:
-            net_units += (s.outcome.actual_value - 1.0) if s.outcome.was_correct else -1.0
+            net_flat += (s.outcome.actual_value - 1.0) if s.outcome.was_correct else -1.0
+    roi_flat = (net_flat / len(resolved) * 100) if resolved else 0.0
 
-    roi = (net_units / len(resolved) * 100) if resolved else 0.0
+    # -- Kelly ROI (kelly_units from features, fallback 1.0u) ------------------
+    net_kelly    = 0.0
+    total_staked = 0.0
+    kelly_fallback_count = 0
+    for s in resolved:
+        if not s.outcome:
+            continue
+        raw_ku = s.features.get("kelly_units")
+        if raw_ku is None:
+            kelly_fallback_count += 1
+            kelly_u = 1.0
+        else:
+            kelly_u = float(raw_ku)
+        total_staked += kelly_u
+        if s.outcome.was_correct:
+            net_kelly += kelly_u * (s.outcome.actual_value - 1.0)
+        else:
+            net_kelly -= kelly_u
+    roi_kelly = (net_kelly / total_staked * 100) if total_staked > 0 else 0.0
 
     # -- header ----------------------------------------------------------------
     print(f"\n{'='*64}")
@@ -319,10 +346,16 @@ def _cmd_global(session) -> None:
 
     # -- units + ROI -----------------------------------------------------------
     print()
-    unit_sign = "+" if net_units >= 0 else ""
-    roi_sign  = "+" if roi >= 0 else ""
-    print(f"  Net units (1u/pick):  {unit_sign}{net_units:.2f}")
-    print(f"  ROI (1u/pick):        {roi_sign}{roi:.1f}%")
+    def _s(v: float) -> str:
+        return "+" if v >= 0 else ""
+
+    print(f"  Flat ROI (1u/pick):   {_s(net_flat)}{net_flat:.2f}u  ({_s(roi_flat)}{roi_flat:.1f}%)")
+    print(f"  Kelly ROI:            {_s(net_kelly)}{net_kelly:.2f}u  ({_s(roi_kelly)}{roi_kelly:.1f}%)"
+          "  [based on suggested sizing]")
+    print(f"  Total staked (Kelly): {total_staked:.1f}u")
+    if kelly_fallback_count:
+        print(f"  (Note: {kelly_fallback_count} pick(s) use 1u fallback — "
+              "kelly_units not stored before 2026-06-03)")
 
     # -- confidence bands ------------------------------------------------------
     bands = [

@@ -15,7 +15,8 @@ Phase 1: pass chat_ids for every subscribed user — nothing else changes.
 from __future__ import annotations
 
 import logging
-from datetime import date
+import uuid
+from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
 
 import requests
@@ -75,7 +76,7 @@ def _format_picks(signals: list[Signal], for_date: date, domain: str = "betting"
         lines.append(f"{i}. <b>{home} vs {away}</b>")
         lines.append(f"   Pick: <b>{pick}</b> @ {odd}{units_str}")
         lines.append(f"   Edge: {edge:+.1%} | EV: {ev:+.1%}")
-        lines.append(f"   <code>follow {s.id}</code>")
+        lines.append(f"   <code>python -m scripts.track follow {str(s.id)[:8]} </code>")
         lines.append("")
 
     n = len(signals)
@@ -181,6 +182,81 @@ def _format_results(signals: list[Signal], for_date: date, domain: str = "bettin
     return "\n".join(lines)
 
 
+def _format_refresh(
+    signals: list[Signal],
+    for_date: date,
+    prev_signals: dict[str, dict],
+    followed_ids: set[uuid.UUID],
+) -> str:
+    """Afternoon refresh message: follow status + deltas for today's slate."""
+    time_str = datetime.now(timezone.utc).strftime("%H:%M")
+    lines: list[str] = [
+        f"<b>&#128202; Sentinel refresh &#8212; {for_date}</b>",
+        f"<i>{time_str} UTC update</i>",
+        "",
+    ]
+
+    if not signals:
+        lines.append("No active picks for today.")
+        return "\n".join(lines)
+
+    no_prev = not prev_signals
+
+    for s in signals:
+        f        = s.features
+        pick     = _esc(str(f.get("pick", "?")))
+        match    = _esc(str(f.get("match", "?")))
+        # Build "pick vs opponent" label
+        home     = f.get("home_team", "")
+        away     = f.get("away_team", "")
+        pick_val = f.get("pick", "")
+        opponent = away if pick_val == home else home
+        opp_str  = _esc(str(opponent)) if opponent else _esc(match)
+
+        odd      = f.get("best_odd", "?")
+        kelly    = f.get("kelly_units")
+        stars    = f.get("star_rating", "")
+        followed = s.id in followed_ids
+
+        follow_icon = "&#128204;" if followed else "&#9898;"   # 📌 or ⚪
+        units_str   = f"  {stars}  {kelly}u" if kelly is not None else ""
+        odd_str     = f"{odd:.2f}" if isinstance(odd, float) else str(odd)
+
+        lines.append(f"{follow_icon} <b>{pick}</b> vs {opp_str}")
+        lines.append(f"@ {odd_str}{units_str}")
+        lines.append(f"<code>python -m scripts.track follow {str(s.id)[:8]} </code>")
+
+        if no_prev:
+            lines.append("No previous run to compare")
+        else:
+            raw_key = str(s.raw_event_id)
+            snap    = prev_signals.get(raw_key)
+            if snap is None:
+                lines.append("&#128994; New pick")   # 🆕 approximation via green circle
+            else:
+                prev_odd   = snap.get("best_odd")
+                prev_kelly = snap.get("kelly_units")
+                parts: list[str] = []
+                if (odd is not None and prev_odd is not None
+                        and abs(float(odd) - float(prev_odd)) > 0.02):
+                    icon = "&#128200;" if float(odd) > float(prev_odd) else "&#128201;"  # 📈 / 📉
+                    parts.append(f"{icon} {prev_odd}&#8594;{odd_str}")
+                if (kelly is not None and prev_kelly is not None
+                        and abs(float(kelly) - float(prev_kelly)) > 0.2):
+                    arrow = "&#8593;" if float(kelly) > float(prev_kelly) else "&#8595;"
+                    parts.append(f"Kelly: {prev_kelly}u&#8594;{kelly}u {arrow}")
+                if parts:
+                    lines.append("  |  ".join(parts))
+                # no changes → omit entirely (no text)
+        lines.append("")
+
+    followed_count  = sum(1 for s in signals if s.id in followed_ids)
+    available_count = len(signals)
+    lines.append(f"{followed_count} followed · {available_count} available")
+    lines.append("<i>1u = 1% of bankroll · 1/10 Kelly sizing</i>")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- #
 # Channel                                                                      #
 # --------------------------------------------------------------------------- #
@@ -209,6 +285,16 @@ class TelegramChannel:
     def send_results(self, signals: list[Signal], for_date: date, domain: str = "betting") -> None:
         """Send resolution summary to every registered chat."""
         self._broadcast(_format_results(signals, for_date, domain=domain))
+
+    def send_refresh(
+        self,
+        signals: list[Signal],
+        for_date: date,
+        prev_signals: dict[str, dict],
+        followed_ids: set[uuid.UUID],
+    ) -> None:
+        """Send afternoon refresh with follow status and deltas."""
+        self._broadcast(_format_refresh(signals, for_date, prev_signals, followed_ids))
 
     # -- internals ---------------------------------------------------------- #
 

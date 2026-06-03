@@ -10,6 +10,7 @@ in this environment). Verify field names against a live response on first run.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 import requests
@@ -80,11 +81,18 @@ class OddsAPIClient:
         )
 
 
+_ODD_MIN = 1.05   # below this is effectively a certainty — suspicious for MLB
+_ODD_MAX = 15.0   # above this is not a real moneyline offering
+
+
 def best_h2h_odds(payload: dict) -> dict[str, float]:
     """Extract the best available decimal odd per outcome across bookmakers.
 
     Returns a mapping like {"Argentina": 2.40, "Brasil": 2.95, "Draw": 3.10}.
     Best odds = most favorable to the bettor, which is what we'd actually take.
+
+    Odds outside [_ODD_MIN, _ODD_MAX] are filtered out and logged — they are
+    either data errors or not genuine betting opportunities.
     """
     best: dict[str, float] = {}
     for bookmaker in payload.get("bookmakers", []):
@@ -93,6 +101,12 @@ def best_h2h_odds(payload: dict) -> dict[str, float]:
                 continue
             for outcome in mkt.get("outcomes", []):
                 name, price = outcome["name"], float(outcome["price"])
+                if price > _ODD_MAX or price < _ODD_MIN:
+                    logging.warning(
+                        "Filtered suspicious odd %.2f for %s (bookmaker: %s)",
+                        price, name, bookmaker.get("key", "?"),
+                    )
+                    continue
                 if name not in best or price > best[name]:
                     best[name] = price
     return best

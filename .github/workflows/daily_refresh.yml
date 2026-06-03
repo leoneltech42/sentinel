@@ -1,0 +1,98 @@
+# Sentinel Phase 0 — Daily Refresh
+#
+# Second daily run at 20:00 UTC (17:00 ART). Re-fetches odds and shows all
+# today's picks with follow status and deltas vs the morning run.
+#
+# Schedule: 20:00 UTC = 17:00 ART (Argentina). This is after afternoon games
+# have started and final pre-game lines are in, so odds deltas are meaningful.
+
+name: Daily Refresh
+
+on:
+  schedule:
+    - cron: '0 20 * * *'
+  workflow_dispatch:    # manual trigger, no inputs needed
+
+# Opt into the Node.js 24 runtime used by GitHub-hosted actions.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  refresh:
+    name: Refresh picks
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------------ #
+      # Setup                                                               #
+      # ------------------------------------------------------------------ #
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ------------------------------------------------------------------ #
+      # Pre-flight checks                                                   #
+      # ------------------------------------------------------------------ #
+      - name: Validate secrets
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "ERROR: DATABASE_URL secret is not set."
+            echo "Go to: Settings -> Secrets and variables -> Actions -> New repository secret"
+            exit 1
+          fi
+          if [ -z "$ODDS_API_KEY" ]; then
+            echo "ERROR: ODDS_API_KEY secret is not set."
+            exit 1
+          fi
+          echo "Secrets present — proceeding."
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+
+      # ------------------------------------------------------------------ #
+      # Pipeline run                                                        #
+      # ------------------------------------------------------------------ #
+      - name: Run refresh (re-fetch odds -> deltas -> notify)
+        id: refresh
+        run: |
+          python -m scripts.paper_trade --refresh --notify 2>&1 | tee /tmp/refresh_output.txt
+          # Propagate non-zero exit codes even through tee.
+          exit ${PIPESTATUS[0]}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      # ------------------------------------------------------------------ #
+      # Job summary                                                         #
+      # ------------------------------------------------------------------ #
+      - name: Write job summary
+        if: always()
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          {
+            echo "## Sentinel Refresh — ${TODAY}"
+            echo ""
+            SIGNAL_COUNT=$(grep -c "Pick:" /tmp/refresh_output.txt 2>/dev/null || echo 0)
+            echo "**Signals refreshed: ${SIGNAL_COUNT}**"
+            echo ""
+            echo '```'
+            cat /tmp/refresh_output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

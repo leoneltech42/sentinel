@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,19 @@ def notify_results(signals: list[Signal], for_date: date, domain: str = "betting
     _telegram_results(signals, for_date, domain)
 
 
+def notify_refresh(
+    signals: list[Signal],
+    for_date: date,
+    prev_signals: dict[str, dict],
+    followed_ids: set[uuid.UUID],
+) -> None:
+    """Send afternoon refresh (follow status + deltas) to all configured channels.
+
+    Silently skips if TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are not set.
+    """
+    _telegram_refresh(signals, for_date, prev_signals, followed_ids)
+
+
 # --------------------------------------------------------------------------- #
 # Internal channel dispatchers                                                #
 # --------------------------------------------------------------------------- #
@@ -60,6 +74,22 @@ def _telegram_results(signals: list[Signal], for_date: date, domain: str) -> Non
         return
     from core.output.telegram import TelegramChannel
     TelegramChannel(token, [chat_id]).send_results(signals, for_date, domain=domain)
+
+
+def _telegram_refresh(
+    signals: list[Signal],
+    for_date: date,
+    prev_signals: dict[str, dict],
+    followed_ids: set[uuid.UUID],
+) -> None:
+    token, chat_id = _telegram_creds()
+    if not token or not chat_id:
+        logging.debug("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set — skipping notification")
+        return
+    from core.output.telegram import TelegramChannel
+    TelegramChannel(token, [chat_id]).send_refresh(
+        signals, for_date, prev_signals=prev_signals, followed_ids=followed_ids
+    )
 
 
 def _telegram_creds() -> tuple[str, str]:

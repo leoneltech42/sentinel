@@ -11,7 +11,8 @@ Resolution: for past unresolved signals, ask the adapter for the outcome.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import uuid
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,6 +26,49 @@ from core.models import (
     SignalOutcome,
     UserSignalView,
 )
+
+
+def snapshot_signals(
+    session: Session,
+    domain_id: uuid.UUID,
+    for_date: date,
+) -> dict[str, dict]:
+    """Snapshot the current state of active signals for this domain+date.
+
+    Call this **before** run_pipeline() so the values captured here reflect
+    the morning-run state.  After run_pipeline() the upsert may have mutated
+    features/confidence/ev in-place, so querying afterwards returns the new
+    values — not the delta baseline.
+
+    Keyed by str(raw_event_id).  Each value holds:
+      {'confidence': float, 'expected_value': float,
+       'kelly_units': float | None, 'best_odd': float | None}
+
+    Returns an empty dict when no signals exist yet (first run of the day),
+    which the refresh display interprets as "no previous run to compare."
+    """
+    active = session.scalars(
+        select(Signal).where(
+            Signal.domain_id == domain_id,
+            Signal.valid_for_date == for_date,
+            Signal.status == "active",
+        )
+    ).all()
+
+    result: dict[str, dict] = {}
+    for s in active:
+        f = s.features
+        result[str(s.raw_event_id)] = {
+            "confidence":     s.confidence,
+            "expected_value": s.expected_value,
+            "kelly_units":    f.get("kelly_units"),
+            "best_odd":       f.get("best_odd"),
+        }
+    return result
+
+
+# Keep the old name as an alias so any future callers aren't broken silently.
+get_previous_run_signals = snapshot_signals
 
 
 def get_or_create_domain(session: Session, adapter: Adapter) -> Domain:

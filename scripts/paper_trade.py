@@ -68,6 +68,9 @@ def main() -> None:
     parser.add_argument("--notify", action="store_true",
                         help="send Telegram notification (requires TELEGRAM_* env vars; "
                              "ignored with --mock)")
+    parser.add_argument("--refresh", action="store_true",
+                        help="second daily run: show all today's picks with follow status "
+                             "and deltas vs the morning run; combines with --notify")
     parser.add_argument(
         "--range",
         nargs=2,
@@ -114,6 +117,22 @@ def main() -> None:
         # ------------------------------------------------------------------ #
         # Live / mock ingestion run                                           #
         # ------------------------------------------------------------------ #
+
+        # Snapshot current signal values BEFORE the pipeline upserts them.
+        # Used by --refresh to compute deltas vs the morning run.
+        if args.refresh and args.domain == "betting":
+            from core.orchestrator import snapshot_signals
+            from core.models import Domain as _DomainSnap
+            _domain_snap = session.scalar(
+                select(_DomainSnap).where(_DomainSnap.slug == "betting")
+            )
+            prev_signals = (
+                snapshot_signals(session, _domain_snap.id, today)
+                if _domain_snap else {}
+            )
+        else:
+            prev_signals = {}
+
         if not args.mock:
             print(f"\nFetching live data ({args.domain}) ...")
             raw_events = adapter.fetch_raw_events()
@@ -136,12 +155,17 @@ def main() -> None:
             n = run_resolution(session, adapter)
             print(f"Resolved {n} past signal(s).\n")
 
-        signals = _print_by_run(session, run.id, args.domain, show_outcomes=args.resolve)
-
-        if do_notify:
-            _send_picks_notification(signals, today, args.domain)
-            if args.resolve:
-                _send_results_notification(session, today, args.domain)
+        if args.refresh and args.domain == "betting":
+            followed_ids = _get_followed_ids(session, today)
+            signals = _print_refresh(session, run, today, prev_signals, followed_ids)
+            if do_notify:
+                _send_refresh_notification(signals, today, prev_signals, followed_ids)
+        else:
+            signals = _print_by_run(session, run.id, args.domain, show_outcomes=args.resolve)
+            if do_notify:
+                _send_picks_notification(signals, today, args.domain)
+                if args.resolve:
+                    _send_results_notification(session, today, args.domain)
 
         if not args.mock:
             _verify_supabase(session, today, args.domain)
@@ -403,6 +427,21 @@ def _send_results_notification(session, for_date: date, domain: str) -> None:
         print(f"  Telegram notification failed (results): {exc}")
 
 
+def _send_refresh_notification(
+    signals: list[Signal],
+    for_date: date,
+    prev_signals: dict[str, dict],
+    followed_ids: set[uuid.UUID],
+) -> None:
+    from core.output import notify_refresh
+    try:
+        notify_refresh(signals, for_date, prev_signals=prev_signals,
+                       followed_ids=followed_ids)
+        print(f"  Telegram refresh notification sent ({len(signals)} signal(s)).")
+    except Exception as exc:
+        print(f"  Telegram notification failed (refresh): {exc}")
+
+
 # --------------------------------------------------------------------------- #
 # Display helpers                                                              #
 # --------------------------------------------------------------------------- #
@@ -586,6 +625,153 @@ def _flights_outcome_line(signal: Signal) -> str:
         pct_str = f"{pct:+.1f}%" if isinstance(pct, float) else str(pct)
         return f"{icon}  price changed {pct_str} after 7 days"
     return "--  pending (resolves in 7 days)"
+
+
+# --------------------------------------------------------------------------- #
+# Refresh helpers                                                              #
+# --------------------------------------------------------------------------- #
+
+def _get_followed_ids(session, for_date: date) -> set[uuid.UUID]:
+    """Return the set of signal UUIDs the Phase 0 user followed for this date.
+
+    Uses SENTINEL_USER_ID / SENTINEL_USER_EMAIL from the env, same as track.py.
+    Returns an empty set if no user is configured or no picks are followed.
+    """
+    import os
+    from core.models import User, UserSignalView, Domain as _Domain
+    user_id_str = os.getenv("SENTINEL_USER_ID", "").strip()
+    email       = os.getenv("SENTINEL_USER_EMAIL", "phase0@sentinel.local").strip()
+
+    user = None
+    if user_id_str:
+        try:
+            user = session.get(User, uuid.UUID(user_id_str))
+        except ValueError:
+            pass
+    if user is None:
+        user = session.scalar(select(User).where(User.email == email))
+    if user is None:
+        return set()
+
+    views = session.scalars(
+        select(UserSignalView)
+        .join(Signal, UserSignalView.signal_id == Signal.id)
+        .where(
+            UserSignalView.user_id == user.id,
+            UserSignalView.followed.is_(True),
+            Signal.valid_for_date == for_date,
+        )
+    ).all()
+    return {v.signal_id for v in views}
+
+
+def _delta_line(signal: Signal, prev: dict) -> str:
+    """One-line summary of what changed vs the pre-pipeline snapshot.
+
+    Returns "" (empty) when no changes exceed the noise threshold.
+    Returns "🆕  (new pick)" when this signal wasn't in the snapshot.
+    Icons: 📈 for improved odds, 📉 for worsened odds.
+    """
+    if not prev:
+        return ""
+
+    raw_key = str(signal.raw_event_id)
+    snap = prev.get(raw_key)
+    if snap is None:
+        return "  🆕  (new pick)"
+
+    f = signal.features
+    curr_odd   = f.get("best_odd")
+    curr_kelly = f.get("kelly_units")
+    prev_odd   = snap.get("best_odd")
+    prev_kelly = snap.get("kelly_units")
+
+    parts: list[str] = []
+
+    if (curr_odd is not None and prev_odd is not None
+            and abs(float(curr_odd) - float(prev_odd)) > 0.02):
+        icon = "📈" if float(curr_odd) > float(prev_odd) else "📉"
+        parts.append(f"{icon} {prev_odd}→{curr_odd}")
+
+    if (curr_kelly is not None and prev_kelly is not None
+            and abs(float(curr_kelly) - float(prev_kelly)) > 0.2):
+        arrow = "↑" if float(curr_kelly) > float(prev_kelly) else "↓"
+        parts.append(f"Kelly: {prev_kelly}u→{curr_kelly}u {arrow}")
+
+    if not parts:
+        return ""   # no changes — omit entirely
+    return "  " + "  |  ".join(parts)
+
+
+def _print_refresh(
+    session,
+    run,
+    for_date: date,
+    prev_signals: dict[str, dict],
+    followed_ids: set[uuid.UUID],
+) -> list[Signal]:
+    """Render the refresh display: all today's picks with follow status and deltas."""
+    from core.models import Domain as _Domain, ModelRun as _ModelRun
+
+    # Fetch all active betting signals for today (not just this run).
+    signals = list(session.scalars(
+        select(Signal)
+        .join(_Domain, Signal.domain_id == _Domain.id)
+        .where(
+            Signal.valid_for_date == for_date,
+            Signal.status == "active",
+            _Domain.slug == "betting",
+        )
+        .options(selectinload(Signal.outcome))
+        .order_by(Signal.expected_value.desc())
+    ).all())
+
+    now_utc = datetime.now(timezone.utc)
+    time_str = now_utc.strftime("%H:%M")
+
+    print(f"\n{'='*64}")
+    print(f"  SENTINEL refresh — {for_date}  ({time_str} UTC)")
+    print(f"{'='*64}")
+
+    if not signals:
+        print("  No active picks for today.")
+        print(f"{'='*64}\n")
+        return signals
+
+    no_prev = not prev_signals
+
+    for i, s in enumerate(signals, 1):
+        f        = s.features
+        match    = f.get("match", "?")
+        pick     = f.get("pick", "?")
+        sport    = f.get("sport", "").split("_")[0]
+        odd      = f.get("best_odd", "?")
+        kelly    = f.get("kelly_units")
+        stars    = f.get("star_rating", "")
+        followed = s.id in followed_ids
+
+        follow_icon  = "📌" if followed else "⚪"
+        units_str    = f"  {stars}  {kelly}u" if kelly is not None else ""
+        odd_str      = f"{odd:.2f}" if isinstance(odd, float) else str(odd)
+
+        print(f"\n  {i}. {follow_icon}  {match}  ({sport})")
+        print(f"     Pick: {pick} @ {odd_str}{units_str}")
+
+        if no_prev:
+            print(f"     No previous run to compare")
+        else:
+            dl = _delta_line(s, prev_signals)
+            if dl:
+                print(f"    {dl}")
+
+    followed_count   = sum(1 for s in signals if s.id in followed_ids)
+    available_count  = len(signals)
+    print(f"\n{'='*64}")
+    print(f"  {followed_count} followed, {available_count} available today.")
+    print(f"  1u = 1% of bankroll  |  Sizing: 1/10 Kelly")
+    print(f"{'='*64}\n")
+
+    return signals
 
 
 if __name__ == "__main__":
