@@ -84,12 +84,24 @@ class BettingAdapter(Adapter):
             if probs is None:
                 continue
 
-            selections = list(probs.keys())
-            odds = [odds_map[s] for s in selections]
-            model_probs = [probs[s] for s in selections]
+            # Only keep selections that survived the odds-sanity filter in
+            # best_h2h_odds().  Extreme odds (e.g. Curaçao @ 80) are dropped
+            # there, so probs may contain keys not present in odds_map.
+            valid_selections = [s for s in probs if s in odds_map]
+            if len(valid_selections) < 2:
+                continue  # not enough valid outcomes to compute value
+
+            odds = [odds_map[s] for s in valid_selections]
+            raw_probs = [probs[s] for s in valid_selections]
+
+            # Re-normalise so the subset still sums to 1.0 before devig.
+            total = sum(raw_probs)
+            if total <= 0:
+                continue
+            model_probs = [p / total for p in raw_probs]
 
             bets = M.find_value_bets(
-                selections, odds, model_probs, self._min_ev, self._min_confidence
+                valid_selections, odds, model_probs, self._min_ev, self._min_confidence
             )
             for bet in bets:
                 signals.append(
@@ -177,7 +189,11 @@ class BettingAdapter(Adapter):
             fair_map = dict(zip(odds_map.keys(), fair_probs))
 
             for sel, model_p in probs.items():
-                odd = odds_map.get(sel, 0.0)
+                odd = odds_map.get(sel)
+                if odd is None:
+                    # Selection was filtered out by odds-sanity guard — skip
+                    # rather than showing a misleading odd=0.00 / EV=-100%.
+                    continue
                 mkt_p = fair_map.get(sel, 0.0)
                 ev_val = M.expected_value(model_p, odd)
                 fails: list[str] = []
