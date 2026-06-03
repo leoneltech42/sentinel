@@ -96,6 +96,44 @@ class ValueBet:
     ev: float
 
 
+def kelly_units(
+    model_prob: float,
+    decimal_odd: float,
+    fraction: float = 0.10,
+    scale: float = 100.0,
+) -> float:
+    """Fractional Kelly stake in units.
+
+    One unit = 1% of bankroll (standard betting convention).
+    fraction=0.10 = tenth Kelly — conservative, suitable for models in
+    validation.  Typical MLB signals (EV +8–20%, odds 1.65–2.20) land in
+    the 1–5u range.  Example: $1000 bankroll → 1u = $10.
+
+    Returns 0.0 for negative or zero edge (no bet recommended).
+    """
+    if decimal_odd <= 1.0:
+        return 0.0
+    edge = model_prob * decimal_odd - 1.0
+    if edge <= 0:
+        return 0.0
+    kelly = edge / (decimal_odd - 1.0)
+    return max(0.1, round(kelly * fraction * scale, 1))
+
+
+def star_rating(units: float) -> str:
+    """Visual stake size indicator based on Kelly units (absolute scale)."""
+    if units < 1.0:
+        return "★☆☆☆☆"   # ★☆☆☆☆
+    elif units < 2.0:
+        return "★★☆☆☆"   # ★★☆☆☆
+    elif units < 3.5:
+        return "★★★☆☆"   # ★★★☆☆
+    elif units < 5.0:
+        return "★★★★☆"   # ★★★★☆
+    else:
+        return "★★★★★"   # ★★★★★
+
+
 def find_value_bets(
     selections: list[str],
     odds: list[float],

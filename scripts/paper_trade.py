@@ -28,10 +28,16 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 import uuid
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+
+# Ensure star/Unicode characters (★ ☆) render correctly on Windows terminals
+# that default to cp1252.  errors='replace' prevents crashes on edge cases.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -481,14 +487,14 @@ def _render_betting(signals: list[Signal], label: date, *, show_outcomes: bool) 
             import logging
             logging.warning("_render_betting: skipping signal %s — no 'match' key", s.id)
             continue
+        units = f.get("kelly_units")
+        stars = f.get("star_rating", "")
+        units_str = f"  {stars}  {units}u" if units is not None else ""
         lines = [
             f"\n  {f['match']}  ({f['sport'].split('_')[0]})",
-            f"    Pick:        {f['pick']}  @ {f['best_odd']}",
-            f"    Model prob:  {f['model_probability']:.1%}  "
-            f"(market {f['market_probability']:.1%})",
+            f"    Pick:        {f['pick']}  @ {f['best_odd']}{units_str}",
             f"    Edge:        {f['edge']:+.1%}",
-            f"    EV:          {s.expected_value:+.1%}   "
-            f"Confidence: {s.confidence:.1%}",
+            f"    EV:          {s.expected_value:+.1%}",
         ]
         if show_outcomes:
             lines.append(f"    Result:      {_betting_outcome_line(s)}")
@@ -496,6 +502,7 @@ def _render_betting(signals: list[Signal], label: date, *, show_outcomes: bool) 
 
     print(f"\n{'='*64}")
     print(f"  {len(signals)} pick(s). Paper-trade these and track results.")
+    print(f"  1u = 1% of bankroll  |  Sizing: 1/10 Kelly")
     print(f"{'='*64}\n")
 
 

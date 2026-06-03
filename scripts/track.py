@@ -26,7 +26,7 @@ import argparse
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -62,7 +62,11 @@ def main() -> None:
                           help="paper stake amount (e.g. 10 for $10)")
 
     # pnl
-    sub.add_parser("pnl", help="show personal P&L summary")
+    p_pnl = sub.add_parser("pnl", help="show personal P&L summary")
+    p_pnl.add_argument("--today", action="store_true",
+                       help="show only picks for today")
+    p_pnl.add_argument("--date", metavar="YYYY-MM-DD", default=None,
+                       help="show only picks for a specific date")
 
     # global
     sub.add_parser("global",
@@ -77,7 +81,13 @@ def main() -> None:
         elif args.cmd == "global":
             _cmd_global(session)
         else:
-            _cmd_pnl(session)
+            # Resolve date filter: --today overrides --date
+            filter_date: date | None = None
+            if getattr(args, "today", False):
+                filter_date = datetime.now(timezone.utc).date()
+            elif getattr(args, "date", None):
+                filter_date = date.fromisoformat(args.date)
+            _cmd_pnl(session, filter_date=filter_date)
 
 
 # --------------------------------------------------------------------------- #
@@ -157,10 +167,10 @@ def _cmd_follow(session, signal_uuid_str: str, stake: float) -> None:
 # pnl                                                                          #
 # --------------------------------------------------------------------------- #
 
-def _cmd_pnl(session) -> None:
+def _cmd_pnl(session, filter_date: date | None = None) -> None:
     user = _get_or_create_user(session)
 
-    views = session.scalars(
+    stmt = (
         select(UserSignalView)
         .where(
             UserSignalView.user_id   == user.id,
@@ -171,7 +181,17 @@ def _cmd_pnl(session) -> None:
             .selectinload(Signal.outcome)
         )
         .order_by(UserSignalView.viewed_at.desc())
-    ).all()
+    )
+    if filter_date is not None:
+        stmt = stmt.join(Signal, UserSignalView.signal_id == Signal.id).where(
+            Signal.valid_for_date == filter_date
+        )
+
+    views = session.scalars(stmt).all()
+
+    if filter_date is not None and not views:
+        print(f"\n  No followed picks for {filter_date}.\n")
+        return
 
     # -- partition by status -------------------------------------------------
     resolved = [v for v in views if v.signal.status == "resolved"]
@@ -327,14 +347,16 @@ def _cmd_global(session) -> None:
         print()
         print(f"  Last {len(last_10)} resolved picks:")
         for s in last_10:
-            f    = s.features
+            f     = s.features
             match = f.get("match", "?")
             odd   = f.get("best_odd", "?")
             edge  = f.get("edge")
-            icon  = "[W]" if (s.outcome and s.outcome.was_correct) else "[L]"
+            units = f.get("kelly_units")
+            icon     = "[W]" if (s.outcome and s.outcome.was_correct) else "[L]"
             odd_str  = f"@ {odd:.2f}" if isinstance(odd, float) else f"@ {odd}"
-            edge_str = f"  edge {edge:+.1%}" if isinstance(edge, float) else ""
-            print(f"  {icon} {match:<44}  {odd_str}{edge_str}")
+            units_str = f"  {units}u" if units is not None else ""
+            edge_str  = f"  edge {edge:+.1%}" if isinstance(edge, float) else ""
+            print(f"  {icon} {match:<44}  {units_str}{odd_str}{edge_str}")
 
     print(f"{'='*64}\n")
 

@@ -66,13 +66,15 @@ def _format_picks(signals: list[Signal], for_date: date, domain: str = "betting"
         home = _esc(str(f.get("home_team", "?")))
         away = _esc(str(f.get("away_team", "?")))
         pick = _esc(str(f.get("pick", "?")))
-        odd  = f.get("best_odd", 0)
-        edge = float(f.get("edge", 0))
-        ev   = float(s.expected_value)
-        conf = float(s.confidence)
+        odd   = f.get("best_odd", 0)
+        edge  = float(f.get("edge", 0))
+        ev    = float(s.expected_value)
+        units = f.get("kelly_units")
+        stars = f.get("star_rating", "")
+        units_str = f"  {stars}  {units}u" if units is not None else ""
         lines.append(f"{i}. <b>{home} vs {away}</b>")
-        lines.append(f"   Pick: <b>{pick}</b> @ {odd}")
-        lines.append(f"   Edge: {edge:+.1%} | EV: {ev:+.1%} | Conf: {conf:.0%}")
+        lines.append(f"   Pick: <b>{pick}</b> @ {odd}{units_str}")
+        lines.append(f"   Edge: {edge:+.1%} | EV: {ev:+.1%}")
         lines.append(f"   <code>follow {s.id}</code>")
         lines.append("")
 
@@ -82,6 +84,8 @@ def _format_picks(signals: list[Signal], for_date: date, domain: str = "betting"
     lines.append("")
     lines.append("To follow a pick: "
                  "<code>python -m scripts.track follow &lt;id&gt; &lt;stake&gt;</code>")
+    lines.append("")
+    lines.append("<i>1u = 1% of bankroll · 1/10 Kelly sizing</i>")
     return "\n".join(lines)
 
 

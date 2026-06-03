@@ -111,6 +111,10 @@ class BettingAdapter(Adapter):
                             "edge": round(bet.edge, 4),
                             "home_team": home,
                             "away_team": away,
+                            "kelly_units": M.kelly_units(bet.model_prob, bet.decimal_odd),
+                            "star_rating": M.star_rating(
+                                M.kelly_units(bet.model_prob, bet.decimal_odd)
+                            ),
                         },
                     )
                 )
