@@ -74,7 +74,7 @@ def _format_picks(signals: list[Signal], for_date: date, domain: str = "betting"
         stars = f.get("star_rating", "")
         units_str = f"  {stars}  {units}u" if units is not None else ""
         lines.append(f"{i}. <b>{home} vs {away}</b>")
-        lines.append(f"   Pick: <b>{pick}</b> @ {odd}{units_str}")
+        lines.append(f"   &#9654; {pick} @ {odd}{units_str}")
         lines.append(f"   Edge: {edge:+.1%} | EV: {ev:+.1%}")
         lines.append(f"   <code>python -m scripts.track follow {str(s.id)[:8]} </code>")
         lines.append("")
@@ -222,8 +222,8 @@ def _format_refresh(
         units_str   = f"  {stars}  {kelly}u" if kelly is not None else ""
         odd_str     = f"{odd:.2f}" if isinstance(odd, float) else str(odd)
 
-        lines.append(f"{follow_icon} <b>{pick}</b> vs {opp_str}")
-        lines.append(f"@ {odd_str}{units_str}")
+        lines.append(f"{follow_icon} {opp_str}")
+        lines.append(f"   &#9654; {pick} @ {odd_str}{units_str}")
         lines.append(f"<code>python -m scripts.track follow {str(s.id)[:8]} </code>")
 
         if no_prev:

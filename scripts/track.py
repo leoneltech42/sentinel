@@ -28,7 +28,7 @@ import sys
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import cast, select, String
 from sqlalchemy.orm import selectinload
 
 from core.db import SessionLocal, init_db
@@ -95,23 +95,52 @@ def main() -> None:
 # --------------------------------------------------------------------------- #
 
 def _cmd_follow(session, signal_uuid_str: str, stake: float) -> None:
-    # -- parse UUID ----------------------------------------------------------
-    try:
-        sig_id = uuid.UUID(signal_uuid_str)
-    except ValueError:
-        print(f"ERROR: '{signal_uuid_str}' is not a valid UUID.")
+    # -- resolve UUID or 8-char prefix ---------------------------------------
+    raw = signal_uuid_str.strip()
+
+    if len(raw) < 8:
+        print("ERROR: UUID must be at least 8 characters.")
         sys.exit(1)
 
-    # -- look up signal ------------------------------------------------------
-    signal = session.scalars(
-        select(Signal)
-        .where(Signal.id == sig_id)
-        .options(selectinload(Signal.outcome))
-    ).first()
+    if len(raw) == 36:
+        # Full UUID — validate format and query exact.
+        try:
+            sig_id = uuid.UUID(raw)
+        except ValueError:
+            print(f"ERROR: '{raw}' is not a valid UUID.")
+            sys.exit(1)
+        signal = session.scalars(
+            select(Signal)
+            .where(Signal.id == sig_id)
+            .options(selectinload(Signal.outcome))
+        ).first()
+        if signal is None:
+            print(f"ERROR: No signal found matching '{raw}'.")
+            sys.exit(1)
+    else:
+        # Prefix lookup — cast UUID column to text for LIKE query.
+        # Works on both Postgres (uuid type) and SQLite (stored as text).
+        matches = session.scalars(
+            select(Signal)
+            .where(cast(Signal.id, String).like(f"{raw}%"))
+            .options(selectinload(Signal.outcome))
+            .order_by(Signal.created_at.desc())
+        ).all()
 
-    if signal is None:
-        print(f"ERROR: Signal {sig_id} not found.")
-        sys.exit(1)
+        if not matches:
+            print(f"ERROR: No signal found matching '{raw}'.")
+            sys.exit(1)
+
+        if len(matches) > 1:
+            print(f"\n  Multiple signals match '{raw}' — be more specific:\n")
+            for m in matches:
+                f = m.features
+                print(f"    {m.id}  {f.get('match', '?')}  pick={f.get('pick', '?')}"
+                      f"  date={m.valid_for_date}")
+            print()
+            sys.exit(1)
+
+        signal = matches[0]
 
     f      = signal.features
     match  = f.get("match", "?")
