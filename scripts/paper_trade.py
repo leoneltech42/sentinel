@@ -545,7 +545,7 @@ def _render_betting(signals: list[Signal], label: date, *, show_outcomes: bool) 
         units_str = f"  {stars}  {units}u" if units is not None else ""
         lines = [
             f"\n  {f['match']}  ({f['sport'].split('_')[0]})",
-            f"    ▶ {f['pick']} @ {f['best_odd']}{units_str}",
+            f"    Pick: {f['pick']} @ {f['best_odd']}{units_str}",
             f"    Edge:        {f['edge']:+.1%}",
             f"    EV:          {s.expected_value:+.1%}",
         ]
@@ -769,7 +769,7 @@ def _print_refresh(
         odd_str      = f"{odd:.2f}" if isinstance(odd, float) else str(odd)
 
         print(f"\n  {i}. {follow_icon}  {match}  ({sport})")
-        print(f"     ▶ {pick} @ {odd_str}{units_str}")
+        print(f"     Pick: {pick} @ {odd_str}{units_str}")
 
         if no_prev:
             print(f"     No previous run to compare")
