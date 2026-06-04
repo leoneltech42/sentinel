@@ -147,15 +147,22 @@ def _cmd_follow(session, signal_uuid_str: str, stake: float) -> None:
     pick   = f.get("pick", "?")
     odd    = f.get("best_odd", "?")
 
-    # -- status warnings -----------------------------------------------------
+    # -- hard stop for non-actionable signals (before any DB write) ----------
+    if signal.status == "void":
+        print(f"ERROR: This pick was voided (postponed / cancelled / data quality).")
+        print(f"       Voided picks cannot be followed.")
+        return
+
     if signal.status == "resolved":
-        if signal.outcome:
-            tag = "[W]" if signal.outcome.was_correct else "[L]"
-        else:
-            tag = "[?]"
-        print(f"[WARN] This pick is already resolved ({tag}). Recording anyway.")
-    elif signal.status == "void":
-        print("[WARN] This pick is void (postponed / cancelled). Recording anyway.")
+        print(f"ERROR: This pick is already resolved.")
+        outcome = session.scalars(
+            select(SignalOutcome).where(SignalOutcome.signal_id == signal.id)
+        ).first()
+        if outcome:
+            result = "✓ won" if outcome.was_correct else "✗ lost"
+            print(f"       Result: {result} @ {odd}")
+        print(f"       Resolved picks cannot be followed.")
+        return
 
     # -- print signal details for confirmation -------------------------------
     print(f"\n  Signal found: {match}")

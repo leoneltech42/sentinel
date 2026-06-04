@@ -366,35 +366,22 @@ def _verify_supabase(session, today: date, domain: str) -> None:
     tomorrow = today + timedelta(days=1)
 
     # Both queries join through domain_id so betting and flights signals don't bleed
-    # into each other's Supabase check output.
-    domain_filter = (
-        select(Signal.id)
-        .join(Domain, Signal.domain_id == Domain.id)
-        .where(
-            Signal.valid_for_date.in_([today, tomorrow]),
-            Domain.slug == domain,
-        )
-        .scalar_subquery()
-    )
-
-    count = session.scalar(
-        select(func.count(Signal.id)).where(
-            Signal.valid_for_date.in_([today, tomorrow]),
-            Signal.id.in_(domain_filter),
-        )
-    )
-    print(f"  Supabase check [{domain}]: {count} signal(s) stored for {today} / {tomorrow}")
-
+    # into each other's Supabase check output.  Count only active signals; void/resolved
+    # are historical records and don't represent today's slate.
     sigs = session.scalars(
         select(Signal)
         .join(Domain, Signal.domain_id == Domain.id)
         .where(
             Signal.valid_for_date.in_([today, tomorrow]),
+            Signal.status == "active",
             Domain.slug == domain,
         )
         .order_by(Signal.created_at.desc())
         .limit(20)
     ).all()
+
+    count = len(sigs)
+    print(f"  Supabase check [{domain}]: {count} active signal(s) for {today} / {tomorrow}")
     if sigs:
         print("  Signal UUIDs in DB:")
         for s in sigs:
@@ -465,7 +452,11 @@ def _print_by_run(
 
     signals = list(session.scalars(
         select(Signal)
-        .where(Signal.model_run_id == run_id, Signal.valid_for_date == today)
+        .where(
+            Signal.model_run_id == run_id,
+            Signal.valid_for_date == today,
+            Signal.status == "active",
+        )
         .options(selectinload(Signal.outcome))
         .order_by(Signal.expected_value.desc())
     ).all())
@@ -478,7 +469,11 @@ def _print_by_run(
             select(Signal)
             .join(ModelRun, Signal.model_run_id == ModelRun.id)
             .join(Domain, ModelRun.domain_id == Domain.id)
-            .where(Signal.valid_for_date == today, Domain.slug == "betting")
+            .where(
+                Signal.valid_for_date == today,
+                Signal.status == "active",
+                Domain.slug == "betting",
+            )
             .options(selectinload(Signal.outcome))
             .order_by(Signal.expected_value.desc())
         ).all())
@@ -501,12 +496,20 @@ def _print_by_date(
     crash on missing domain-specific feature keys (e.g. 'match' for betting).
     """
     from core.models import Domain
+    # When showing outcomes (--resolve / --date), include resolved signals so
+    # results are visible.  Always exclude void — they have no meaningful result.
+    status_filter = (
+        Signal.status.in_(["active", "resolved"])
+        if show_outcomes
+        else Signal.status == "active"
+    )
     signals = session.scalars(
         select(Signal)
         .join(Domain, Signal.domain_id == Domain.id)
         .where(
             Signal.valid_for_date == target_date,
             Domain.slug == domain,
+            status_filter,
         )
         .options(selectinload(Signal.outcome))
         .order_by(Signal.expected_value.desc())
