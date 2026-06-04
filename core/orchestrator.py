@@ -114,10 +114,29 @@ def run_pipeline(session: Session, adapter: Adapter) -> ModelRun:
     session.add(run)
     session.flush()
 
-    # 3. Generate signals and persist, each linked to its run and raw event.
+    # 3. Expire any active signals whose game has already started (valid_until in
+    # the past).  These are pre-match picks that were never resolved because the
+    # game began before the resolution loop ran.  Marking them "expired" keeps
+    # them out of the daily display and prevents accidental follows.
+    now = datetime.now(timezone.utc)
+    expired_sigs = session.scalars(
+        select(Signal).where(
+            Signal.domain_id == domain.id,
+            Signal.status == "active",
+            Signal.valid_until.isnot(None),
+            Signal.valid_until < now,
+        )
+    ).all()
+    for sig in expired_sigs:
+        sig.status = "expired"
+    if expired_sigs:
+        session.flush()
+        logging.info("Expired %d signal(s) past valid_until.", len(expired_sigs))
+
+    # 4. Generate signals and persist, each linked to its run and raw event.
     # Upsert logic: update the existing active signal if confidence or EV shifted
     # by more than the noise threshold; insert if no prior signal exists.
-    # Resolved/void signals are never touched — they are historical records.
+    # Resolved/void/expired signals are never touched — they are historical records.
     _UPSERT_THRESHOLD = 0.005  # 0.5% — smaller swings are odds noise, not a new pick
 
     signal_data = adapter.generate_signals(events)
@@ -145,7 +164,7 @@ def run_pipeline(session: Session, adapter: Adapter) -> ModelRun:
 
         if existing is not None:
             if existing.status != "active":
-                # Historical record — never mutate resolved or void signals.
+                # Historical record — never mutate resolved, void, or expired signals.
                 continue
             conf_delta = abs(sd.confidence - existing.confidence)
             ev_delta = abs(sd.expected_value - existing.expected_value)

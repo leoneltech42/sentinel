@@ -148,6 +148,11 @@ def _cmd_follow(session, signal_uuid_str: str, stake: float) -> None:
     odd    = f.get("best_odd", "?")
 
     # -- hard stop for non-actionable signals (before any DB write) ----------
+    if signal.status == "expired":
+        print(f"ERROR: This pick has expired (game already started).")
+        print(f"       Expired picks cannot be followed.")
+        return
+
     if signal.status == "void":
         print(f"ERROR: This pick was voided (postponed / cancelled / data quality).")
         print(f"       Voided picks cannot be followed.")

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 import requests
 
@@ -55,7 +56,19 @@ class OddsAPIClient:
             "x-requests-used": resp.headers.get("x-requests-used", "?"),
             "x-requests-remaining": resp.headers.get("x-requests-remaining", "?"),
         }
-        return [self._to_event(sport_key, ev) for ev in resp.json()]
+        # Discard events that have already started — in-play odds are volatile
+        # and meaningless for pre-match value betting.
+        now = datetime.now(timezone.utc)
+        raw_events: list[dict[str, Any]] = [
+            ev for ev in resp.json()
+            if datetime.fromisoformat(
+                ev["commence_time"].replace("Z", "+00:00")
+            ) > now
+        ]
+        skipped = len(resp.json()) - len(raw_events)
+        if skipped:
+            logging.info("Skipped %d in-play event(s) for %s", skipped, sport_key)
+        return [self._to_event(sport_key, ev) for ev in raw_events]
 
     def fetch_all(self) -> list[RawEventData]:
         events: list[RawEventData] = []

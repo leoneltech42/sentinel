@@ -100,8 +100,10 @@ class Signal(Base):
     confidence: Mapped[float] = mapped_column(Float)
     expected_value: Mapped[float] = mapped_column(Float)
     features: Mapped[dict] = mapped_column(JSONType)  # domain-specific (jsonb)
-    # Valid values: "active" | "resolved" | "void"
-    # "void" = match didn't finish (postponed, suspended, cancelled); no outcome row.
+    # Valid values: "active" | "resolved" | "void" | "expired"
+    # "void"    = match didn't finish (postponed, suspended, cancelled); no outcome row.
+    # "expired" = signal's valid_until passed before resolution (game already started
+    #             when the pipeline ran); treated like void for display and P&L.
     status: Mapped[str] = mapped_column(String(32), default="active")
     valid_for_date: Mapped[date] = mapped_column(Date, index=True)
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
