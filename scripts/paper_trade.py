@@ -42,7 +42,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from core.db import SessionLocal, init_db
+from core.db import SessionLocal, configure_mock_db, init_db
 from core.models import Signal, SignalOutcome
 from core.orchestrator import run_pipeline, run_resolution
 
@@ -89,7 +89,18 @@ def main() -> None:
     today = datetime.now(timezone.utc).date()
     do_notify = args.notify and not args.mock
 
+    if args.mock:
+        # Redirect all DB writes to an in-memory SQLite instance so mock runs
+        # never touch the production database.  Must happen before init_db()
+        # so the schema is created in the ephemeral engine, not Supabase.
+        configure_mock_db()
+
     init_db()
+
+    # Re-import SessionLocal after a possible mock reconfiguration so the
+    # context manager below uses the (possibly replaced) session factory.
+    from core.db import SessionLocal  # noqa: PLC0415
+
     with SessionLocal() as session:
         # ------------------------------------------------------------------ #
         # Adapter selection                                                   #

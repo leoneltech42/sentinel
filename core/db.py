@@ -42,6 +42,24 @@ engine = create_engine(DATABASE_URL, echo=False, future=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
 
+def configure_mock_db() -> None:
+    """Replace the module-level engine and session factory with an in-memory
+    SQLite instance.
+
+    Call this BEFORE init_db() when running in --mock mode.  The in-memory DB
+    is ephemeral: it exists only for the duration of the process and is
+    discarded when the Python interpreter exits — nothing is ever written to
+    the configured DATABASE_URL (Supabase/Postgres or a local SQLite file).
+
+    Thread-safety note: this rewrites module globals.  Fine for the single-
+    threaded CLI; do not call in a multi-threaded server context.
+    """
+    global engine, SessionLocal  # noqa: PLW0603
+
+    engine = create_engine("sqlite://", echo=False, future=True)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+
+
 def init_db() -> None:
     """Create all tables. For Phase 0; Alembic migrations own this in Phase 1."""
     from core import models  # noqa: F401  (import registers the models)
