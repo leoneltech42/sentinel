@@ -49,7 +49,7 @@ class BettingAdapter(Adapter):
 
     @property
     def model_version(self) -> str:
-        return "poisson_v0.1.0"
+        return "poisson_v0.2.0"
 
     def hyperparams(self) -> dict[str, Any]:
         return {

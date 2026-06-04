@@ -94,9 +94,10 @@ Built and working:
 
 Live paper trading status (update as results come in):
 - Started: 2026-05-31
-- Picks resolved: 8 (3W 5L, 37.5% — sample too small to conclude)
+- Picks resolved: 29 (12W 17L, 41.4% — model v0.1.0, HA=1.10 bias confirmed)
+- Model updated to v0.2.0 on 2026-06-04 (HA=1.10 → 1.04)
 - Backtest (May 2026, 419 games): 58.7% accuracy, well-calibrated
-- Gate to Phase 1: 30+ resolved picks, win rate > 53%
+- Gate to Phase 1: 30+ resolved picks with v0.2.0, win rate > 53%
 
 Intentionally deferred — do not implement without discussion:
 - **Soccer / World Cup model:** deferred; MLB has 162 games/season, faster
@@ -164,6 +165,12 @@ Intentionally deferred — do not implement without discussion:
   At 1.10 the model generates 72.8% home picks and suppresses away value. Backtest
   confirms overall accuracy is insensitive to this parameter (57.8–58.2% across
   HA=1.00–1.10); the fix improves calibration without sacrificing performance.
+- **`HOME_ADVANTAGE` changed 1.10 → 1.04 on 2026-06-04 at the 30-pick gate.**
+  Live analysis of 10 resolved 70%+ picks (30% win rate, 100% home) confirmed
+  the bias was active: WSH, NYY, MIL were reaching 70%+ only because HA inflated
+  their true 64–67% probability. At HA=1.04, 4 of the 7 losing 70%+ picks are
+  filtered out entirely. `model_version` bumped to `poisson_v0.2.0`; all future
+  signals are tagged for A/B comparison against v0.1.0 picks in the DB.
 
 ## Conventions
 
@@ -190,22 +197,19 @@ Intentionally deferred — do not implement without discussion:
 
 ## Phase 0 remaining work
 
-**Gate to Phase 1:** 30+ resolved picks with win rate > 53%.
-Currently at 8 resolved picks (3W 5L). Running daily.
+**Gate to Phase 1:** 30+ resolved picks with v0.2.0, win rate > 53%.
+Currently at 29 resolved picks (v0.1.0). Running daily with v0.2.0 from 2026-06-04.
 
-Decision tree at 30+ picks:
+Decision tree at 30+ v0.2.0 picks:
 - Win rate **> 53%** → start Phase 1
-- Win rate **45–53%** → tune `min_ev` / `min_confidence` thresholds
+- Win rate **45–53%** → consider recency weighting in MLBStatsProvider (last-15-games blend)
 - Win rate **< 45%** → investigate systematic model issue first
 
-**Pending model fix (apply at the 30-pick gate, not before):**
-- Change `HOME_ADVANTAGE` in `adapters/betting/stats.py` from `1.10` → `1.04`
-- Reason: backtested on 419 games — HA=1.10 generates 72.8% home picks vs the
-  expected ~53% empirical MLB rate. HA=1.04 matches the base rate and recovers
-  away-team picks (away accuracy was 61.4% in backtest) without changing overall
-  accuracy (57.8% at 1.04 vs 58.0% at 1.10).
-- **Do NOT apply before 30 resolved live picks** — live sample is noise.
-- After applying: monitor that away-team picks start appearing within 3 days.
+**Next model improvement (consider at 50+ v0.2.0 picks):**
+- Add recency weighting to `MLBStatsProvider.runs_per_game()`: blend season avg (70%)
+  with last-15-games avg (30%). Evidence: WSH, NYY, MIL significantly underscored
+  their season RPG averages in observed losses (avg 2.3 actual vs 5.8 expected for WSH).
+  Defer until HA fix effect is measurable — needs 20+ v0.2.0 picks to isolate.
 
 Phase 1 will include:
 - FastAPI service (`api/` scaffold already exists)

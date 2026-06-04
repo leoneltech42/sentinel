@@ -20,7 +20,13 @@ import requests
 
 # League-average baselines (expected goals/runs for an average team per game).
 SOCCER_BASELINE = 1.35  # avg goals per team in a World Cup match (approx.)
-HOME_ADVANTAGE = 1.10  # mild multiplier on the home/first-named side
+# 1.04 matches the empirical MLB home win rate (~53%).
+# At 1.10 the model generates 72%+ home picks and inflates
+# confidence in the 70%+ band. Backtest confirmed overall
+# accuracy is insensitive to this parameter (57.8-58.2%
+# across HA=1.00-1.10); 1.04 improves calibration without
+# sacrificing performance. Applied at 30-pick gate 2026-06-04.
+HOME_ADVANTAGE = 1.04
 
 # v0 soccer ratings: relative attacking strength, 1.0 = average. Replace with feed.
 WORLD_CUP_RATINGS: dict[str, float] = {
