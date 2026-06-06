@@ -189,6 +189,10 @@ Intentionally deferred — do not implement without discussion:
 - Validate model math in isolation before wiring it to the DB or live APIs.
 - `--range DATE_FROM DATE_TO` overrides route config for flights range mode
   testing without touching Supabase (pairs with `--domain flights`).
+- `--route ORIG DEST` overrides the default EZE→MAD route with any IATA pair.
+  Combine with `--range` for date-range mode on a custom route.
+  Examples: `--domain flights --route JFK LHR`
+            `--domain flights --route EZE MIA --range 2026-08-01 2026-08-31`
 - `--domain flights` selects the flights adapter throughout all scripts.
 - **SerpAPI quota:** 5 requests/run by default (one per monitored date),
   100/month free tier — quota used is logged on every run and recorded in

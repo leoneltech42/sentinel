@@ -81,6 +81,14 @@ def main() -> None:
              "Activates range mode on the default EZE->MAD route (flexible mode disabled). "
              "Example: --range 2026-08-01 2026-08-31",
     )
+    parser.add_argument(
+        "--route",
+        nargs=2,
+        metavar=("ORIGIN", "DESTINATION"),
+        default=None,
+        help="flights only: override default route using IATA codes. "
+             "Example: --route JFK LHR. Combine with --range for date-range mode.",
+    )
     args = parser.parse_args()
 
     if args.verbose or args.mock:
@@ -207,19 +215,46 @@ def _build_betting_adapter(args):
 def _build_flights_adapter(args, session):
     """Build the FlightsAdapter from CLI args.
 
-    --range DATE_FROM DATE_TO activates range mode on the default EZE->MAD route
-    with flexible mode disabled.  Without --range the adapter uses its default
-    route config (flexible mode: 5 weekly dates from today+7).
+    --route ORIGIN DEST  overrides the default EZE->MAD route with any IATA pair.
+    --range DATE_FROM DATE_TO  activates range mode (flexible disabled) on the
+        active route (default or --route override).
+    Without either flag, the adapter uses the default EZE->MAD flexible config.
     """
+    import re
+
     from adapters.flights.adapter import FlightsAdapter
     events_override = None
     routes_override = None
+
     if args.mock:
         from scripts.sample_data import sample_flights_events_serpapi
         events_override = sample_flights_events_serpapi()
-    if getattr(args, "range", None):
+
+    # Resolve origin/destination: --route overrides default EZE->MAD.
+    route_arg = getattr(args, "route", None)
+    range_arg = getattr(args, "range", None)
+
+    if route_arg is not None:
+        origin, destination = route_arg[0].upper(), route_arg[1].upper()
+        for code in (origin, destination):
+            if not re.match(r"^[A-Z]{3}$", code):
+                print(f"ERROR: '{code}' is not a valid IATA code (must be 3 letters, e.g. JFK).")
+                sys.exit(1)
         from adapters.flights.routes import RouteConfig
-        date_from, date_to = args.range
+        use_flexible = not bool(range_arg)
+        routes_override = [
+            RouteConfig(
+                origin=origin,
+                destination=destination,
+                monitor_flexible=use_flexible,
+                range_date_from=range_arg[0] if range_arg else None,
+                range_date_to=range_arg[1] if range_arg else None,
+            )
+        ]
+    elif range_arg:
+        # --range without --route: apply to default EZE->MAD route.
+        from adapters.flights.routes import RouteConfig
+        date_from, date_to = range_arg
         routes_override = [
             RouteConfig(
                 origin="EZE",
@@ -229,6 +264,7 @@ def _build_flights_adapter(args, session):
                 range_date_to=date_to,
             )
         ]
+
     return FlightsAdapter(
         serpapi_key=os.getenv("SERPAPI_KEY", ""),
         session=session,
