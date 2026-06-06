@@ -202,11 +202,18 @@ def run_pipeline(session: Session, adapter: Adapter) -> ModelRun:
 
 
 def run_resolution(session: Session, adapter: Adapter) -> int:
-    """Resolve past signals that don't have an outcome yet. Returns count resolved."""
+    """Resolve past signals that don't have an outcome yet. Returns count resolved.
+
+    Queries both "active" and "expired" signals — expired signals are games whose
+    valid_until passed before the resolution loop ran (e.g. late West Coast games).
+    They are fully resolvable once the game finishes; excluding them from resolution
+    would leave real results unrecorded.
+    """
     domain = get_or_create_domain(session, adapter)
     pending = session.scalars(
         select(Signal).where(
-            Signal.domain_id == domain.id, Signal.status == "active"
+            Signal.domain_id == domain.id,
+            Signal.status.in_(["active", "expired"]),
         )
     ).all()
 
