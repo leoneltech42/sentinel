@@ -9,9 +9,7 @@
 name: Daily Refresh
 
 on:
-  schedule:
-    - cron: '0 20 * * *'
-  workflow_dispatch:    # manual trigger, no inputs needed
+  workflow_dispatch:    # manual trigger — cron-job.org is the sole scheduler
 
 # Opt into the Node.js 24 runtime used by GitHub-hosted actions.
 env:

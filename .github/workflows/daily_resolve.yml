@@ -10,9 +10,7 @@
 name: Daily Resolution
 
 on:
-  schedule:
-    - cron: '0 6 * * *'
-  workflow_dispatch:
+  workflow_dispatch:    # manual trigger — cron-job.org is the sole scheduler
     inputs:
       date:
         description: 'Date to resolve (YYYY-MM-DD). Leave blank to resolve yesterday.'
