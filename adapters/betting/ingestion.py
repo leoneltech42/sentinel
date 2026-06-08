@@ -20,18 +20,34 @@ from adapters.base import RawEventData
 
 _BASE = "https://api.the-odds-api.com/v4"
 
-# Sport keys for our two Phase 0 sports.
-SPORT_KEYS = {
+# Full registry of sports the adapter knows how to model. Not all of them are
+# necessarily *active* in a given run — see BettingAdapter's `active_sports`.
+# World Cup stays registered (re-enable via domain config) even though it's
+# off by default: the static WORLD_CUP_RATINGS placeholder finds no genuine
+# edge without a real stats feed (see CLAUDE.md decision log).
+ALL_SPORT_KEYS = {
     "mlb": "baseball_mlb",
     "world_cup": "soccer_fifa_world_cup",
 }
 
+# Back-compat alias — existing lookups like SPORT_KEYS["mlb"] keep working.
+SPORT_KEYS = ALL_SPORT_KEYS
+
 
 class OddsAPIClient:
-    def __init__(self, api_key: str, regions: str = "eu", market: str = "h2h"):
+    def __init__(
+        self,
+        api_key: str,
+        regions: str = "eu",
+        market: str = "h2h",
+        sport_keys: list[str] | None = None,
+    ):
         self.api_key = api_key
         self.regions = regions  # eu gives decimal odds
         self.market = market  # h2h = moneyline / match winner
+        # Provider sport_key strings (e.g. "baseball_mlb") to fetch. Defaults
+        # to every registered sport when not given.
+        self._sport_keys = sport_keys if sport_keys is not None else list(ALL_SPORT_KEYS.values())
         # Populated after each successful request; read via .last_quota.
         self._last_quota: dict[str, str] = {}
 
@@ -72,7 +88,7 @@ class OddsAPIClient:
 
     def fetch_all(self) -> list[RawEventData]:
         events: list[RawEventData] = []
-        for sport_key in SPORT_KEYS.values():
+        for sport_key in self._sport_keys:
             try:
                 events.extend(self.fetch_sport(sport_key))
             except Exception as exc:

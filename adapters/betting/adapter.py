@@ -24,7 +24,8 @@ from adapters.base import (
 )
 from adapters.betting import model as M
 from adapters.betting import stats as S
-from adapters.betting.ingestion import SPORT_KEYS, OddsAPIClient, best_h2h_odds
+from adapters.betting.ingestion import ALL_SPORT_KEYS, SPORT_KEYS, OddsAPIClient, best_h2h_odds
+from adapters.betting.justification import LLMJustifier
 
 
 class BettingAdapter(Adapter):
@@ -39,24 +40,48 @@ class BettingAdapter(Adapter):
         min_confidence: float = 0.50,
         events_override: list[RawEventData] | None = None,
         mlb_runs_override: dict[str, float] | None = None,
+        mlb_pitchers_override: dict[str, dict] | None = None,
+        active_sports: list[str] | None = None,
+        justifier: "LLMJustifier | None" = None,
     ):
-        self._client = OddsAPIClient(api_key) if api_key else None
-        self._mlb = S.MLBStatsProvider(season, runs_override=mlb_runs_override)
+        # Which sports this run actually ingests/models. World Cup stays
+        # registered in ALL_SPORT_KEYS (re-enable via domain config) but is
+        # off by default — the static WORLD_CUP_RATINGS placeholder finds no
+        # genuine edge without a real stats feed (see CLAUDE.md decision log).
+        self._active_sports = active_sports if active_sports is not None else ["mlb"]
+        active_sport_keys = [ALL_SPORT_KEYS[s] for s in self._active_sports]
+
+        self._client = OddsAPIClient(api_key, sport_keys=active_sport_keys) if api_key else None
+        self._mlb = S.MLBStatsProvider(
+            season,
+            runs_override=mlb_runs_override,
+            pitchers_override=mlb_pitchers_override,
+        )
         self._min_ev = min_ev
         self._min_confidence = min_confidence
         # Lets the paper-trade script inject sample data (mock mode).
         self._events_override = events_override
+        # Optional LLM-based pick justification — never invoked in mock mode.
+        self._justifier = justifier
 
     @property
     def model_version(self) -> str:
-        return "poisson_v0.2.0"
+        # v0.3.0 (2026-06-08):
+        # - Starting pitcher ERA adjustment via MLB Stats API
+        # - Recent form blend: 70% season avg + 30% last-15 games
+        # - 50/50 tie redistribution (extra innings ≈ coin flip)
+        return "poisson_v0.3.0"
 
     def hyperparams(self) -> dict[str, Any]:
         return {
             "min_ev": self._min_ev,
             "min_confidence": self._min_confidence,
             "sports": list(SPORT_KEYS.keys()),
+            "active_sports": self._active_sports,
             "home_advantage": S.HOME_ADVANTAGE,
+            "recent_form_weight": 0.30,
+            "pitcher_league_avg_era": 4.20,
+            "tie_redistribution": "50/50",
         }
 
     # --- ingestion -------------------------------------------------------- #
@@ -80,9 +105,17 @@ class BettingAdapter(Adapter):
             if not home or not away:
                 continue
 
-            probs = self._model_probs(sport_key, home, away, odds_map)
+            game_date = ev.event_at.date().isoformat()
+            probs = self._model_probs(sport_key, home, away, odds_map, game_date)
             if probs is None:
                 continue
+
+            # Pitcher info for the signal display/audit trail (jsonb features —
+            # never a typed column). Cached in MLBStatsProvider, so this is a
+            # no-op extra call beyond what _model_probs already triggered.
+            pitchers = None
+            if sport_key == SPORT_KEYS["mlb"]:
+                pitchers = self._mlb.probable_pitchers(game_date, home, away)
 
             # Only keep selections that survived the odds-sanity filter in
             # best_h2h_odds().  Extreme odds (e.g. Curaçao @ 80) are dropped
@@ -104,6 +137,36 @@ class BettingAdapter(Adapter):
                 valid_selections, odds, model_probs, self._min_ev, self._min_confidence
             )
             for bet in bets:
+                features = {
+                    "match": f"{home} vs {away}",
+                    "sport": sport_key,
+                    "market": "h2h",
+                    "pick": bet.selection,
+                    "best_odd": bet.decimal_odd,
+                    "model_probability": round(bet.model_prob, 4),
+                    "market_probability": round(bet.market_prob, 4),
+                    "edge": round(bet.edge, 4),
+                    "home_team": home,
+                    "away_team": away,
+                    "kelly_units": M.kelly_units(bet.model_prob, bet.decimal_odd),
+                    "star_rating": M.star_rating(
+                        M.kelly_units(bet.model_prob, bet.decimal_odd)
+                    ),
+                }
+                if pitchers:
+                    features["home_pitcher"] = pitchers.get("home_pitcher_name")
+                    features["away_pitcher"] = pitchers.get("away_pitcher_name")
+                    features["home_pitcher_era"] = pitchers.get("home_pitcher_era")
+                    features["away_pitcher_era"] = pitchers.get("away_pitcher_era")
+
+                # Optional LLM-generated "why this pick" blurb — jsonb only,
+                # never a typed column. Never invoked in mock mode (no
+                # justifier configured); failures degrade to None.
+                if self._justifier:
+                    features["justification"] = self._justifier.generate(features)
+                else:
+                    features["justification"] = None
+
                 signals.append(
                     SignalData(
                         raw_event_key=ev.event_key,
@@ -112,28 +175,18 @@ class BettingAdapter(Adapter):
                         expected_value=bet.ev,
                         valid_for_date=ev.event_at.date(),
                         valid_until=ev.event_at,
-                        features={
-                            "match": f"{home} vs {away}",
-                            "sport": sport_key,
-                            "market": "h2h",
-                            "pick": bet.selection,
-                            "best_odd": bet.decimal_odd,
-                            "model_probability": round(bet.model_prob, 4),
-                            "market_probability": round(bet.market_prob, 4),
-                            "edge": round(bet.edge, 4),
-                            "home_team": home,
-                            "away_team": away,
-                            "kelly_units": M.kelly_units(bet.model_prob, bet.decimal_odd),
-                            "star_rating": M.star_rating(
-                                M.kelly_units(bet.model_prob, bet.decimal_odd)
-                            ),
-                        },
+                        features=features,
                     )
                 )
         return signals
 
     def _model_probs(
-        self, sport_key: str, home: str, away: str, odds_map: dict[str, float]
+        self,
+        sport_key: str,
+        home: str,
+        away: str,
+        odds_map: dict[str, float],
+        game_date: str | None = None,
     ) -> dict[str, float] | None:
         """Map each market selection to the model's independent probability."""
         if sport_key == SPORT_KEYS["world_cup"]:
@@ -144,7 +197,10 @@ class BettingAdapter(Adapter):
                 out["Draw"] = p_draw
             return out
         if sport_key == SPORT_KEYS["mlb"]:
-            lam_h, lam_a = S.mlb_lambdas(self._mlb, home, away)
+            lam_h, lam_a = S.mlb_lambdas(
+                self._mlb, home, away,
+                game_date or datetime.now(timezone.utc).date().isoformat(),
+            )
             p_home, p_away = M.baseball_match_probs(lam_h, lam_a)
             return {home: p_home, away: p_away}
         return None
@@ -178,7 +234,9 @@ class BettingAdapter(Adapter):
                 results.append(entry)
                 continue
 
-            probs = self._model_probs(sport_key, home, away, odds_map)
+            probs = self._model_probs(
+                sport_key, home, away, odds_map, ev.event_at.date().isoformat()
+            )
             if probs is None:
                 entry["skip_reason"] = f"sport '{sport_key}' not modelled yet"
                 results.append(entry)

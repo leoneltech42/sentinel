@@ -76,6 +76,8 @@ def _format_picks(signals: list[Signal], for_date: date, domain: str = "betting"
         lines.append(f"{i}. <b>{home} vs {away}</b>")
         lines.append(f"   Pick: {pick} @ {odd}{units_str}")
         lines.append(f"   Edge: {edge:+.1%} | EV: {ev:+.1%}")
+        justification = f.get("justification")
+        lines.append(f"<i>&#128161; {_esc(justification)}</i>" if justification else "")
         lines.append(f"   <code>python -m scripts.track follow {str(s.id)[:8]} </code>")
         lines.append("")
 
@@ -224,6 +226,8 @@ def _format_refresh(
 
         lines.append(f"{follow_icon} {opp_str}")
         lines.append(f"   Pick: {pick} @ {odd_str}{units_str}")
+        justification = f.get("justification")
+        lines.append(f"<i>&#128161; {_esc(justification)}</i>" if justification else "")
         lines.append(f"<code>python -m scripts.track follow {str(s.id)[:8]} </code>")
 
         if no_prev:

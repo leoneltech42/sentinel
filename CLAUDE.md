@@ -184,7 +184,12 @@ Intentionally deferred — do not implement without discussion:
 - `--notify` must be passed explicitly — notifications are never sent by
   default.
 - GitHub Actions secrets: `DATABASE_URL`, `ODDS_API_KEY`,
-  `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+  `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `LLM_JUSTIFIER_API_KEY`,
+  `LLM_JUSTIFIER_BASE_URL`, `LLM_JUSTIFIER_MODEL`.
+- `LLM_JUSTIFIER_API_KEY` / `LLM_JUSTIFIER_BASE_URL` / `LLM_JUSTIFIER_MODEL`:
+  any OpenAI-compatible chat API for pick justifications (defaults to Groq's
+  free tier — groq.com, no credit card). Optional; never called in `--mock`
+  mode, and failures degrade gracefully (signal stores `justification: None`).
 - `SENTINEL_USER_ID` in `.env` identifies the Phase 0 user in all scripts.
 - Validate model math in isolation before wiring it to the DB or live APIs.
 - `--range DATE_FROM DATE_TO` overrides route config for flights range mode

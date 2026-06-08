@@ -200,15 +200,29 @@ def _build_betting_adapter(args):
     season = int(os.getenv("SEASON", today.year))
     events_override = None
     mlb_runs_override = None
+    mlb_pitchers_override = None
+    justifier = None
     if args.mock:
-        from scripts.sample_data import sample_events, sample_mlb_runs
+        from scripts.sample_data import sample_events, sample_mlb_runs, sample_mlb_pitchers
         events_override = sample_events()
         mlb_runs_override = sample_mlb_runs()
+        mlb_pitchers_override = sample_mlb_pitchers()
+        # Never call an LLM API in mock mode — justifier stays None.
+    else:
+        from adapters.betting.justification import LLMJustifier
+        if api_key := os.getenv("LLM_JUSTIFIER_API_KEY"):
+            justifier = LLMJustifier(
+                api_key=api_key,
+                base_url=os.getenv("LLM_JUSTIFIER_BASE_URL", "https://api.groq.com/openai/v1"),
+                model=os.getenv("LLM_JUSTIFIER_MODEL", "llama-3.3-70b-versatile"),
+            )
     return BettingAdapter(
         api_key=os.getenv("ODDS_API_KEY", ""),
         season=season,
         events_override=events_override,
         mlb_runs_override=mlb_runs_override,
+        mlb_pitchers_override=mlb_pitchers_override,
+        justifier=justifier,
     )
 
 
@@ -585,6 +599,8 @@ def _render_betting(signals: list[Signal], label: date, *, show_outcomes: bool) 
             f"    Edge:        {f['edge']:+.1%}",
             f"    EV:          {s.expected_value:+.1%}",
         ]
+        if justification := f.get("justification"):
+            lines.append(f"  💡 {justification}")
         if show_outcomes:
             lines.append(f"    Result:      {_betting_outcome_line(s)}")
         print("\n".join(lines))

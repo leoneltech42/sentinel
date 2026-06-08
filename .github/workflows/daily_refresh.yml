@@ -76,6 +76,9 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LLM_JUSTIFIER_API_KEY: ${{ secrets.LLM_JUSTIFIER_API_KEY }}
+          LLM_JUSTIFIER_BASE_URL: ${{ secrets.LLM_JUSTIFIER_BASE_URL }}
+          LLM_JUSTIFIER_MODEL: ${{ secrets.LLM_JUSTIFIER_MODEL }}
 
       # ------------------------------------------------------------------ #
       # Job summary                                                         #

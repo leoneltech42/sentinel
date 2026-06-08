@@ -97,6 +97,21 @@ def sample_mlb_runs() -> dict[str, float]:
     }
 
 
+def sample_mlb_pitchers() -> dict[str, dict]:
+    """Sample probable-pitcher data, keyed by '{home_team}_{away_team}'.
+
+    Lets --mock exercise the v0.3.0 pitcher-adjustment path with no network.
+    """
+    return {
+        "Los Angeles Dodgers_Colorado Rockies": {
+            "home_pitcher_era": 3.20,
+            "away_pitcher_era": 5.10,
+            "home_pitcher_name": "Mock Pitcher A",
+            "away_pitcher_name": "Mock Pitcher B",
+        }
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Flights domain fixtures                                                      #
 # --------------------------------------------------------------------------- #
