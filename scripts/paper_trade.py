@@ -812,23 +812,38 @@ def _print_refresh(
         pick     = f.get("pick", "?")
         sport    = f.get("sport", "").split("_")[0]
         odd      = f.get("best_odd", "?")
+        edge     = f.get("edge", 0.0)
         kelly    = f.get("kelly_units")
         stars    = f.get("star_rating", "")
         followed = s.id in followed_ids
+        justification = f.get("justification")
+        regenerated   = f.get("justification_regenerated", False)
 
-        follow_icon  = "📌" if followed else "⚪"
-        units_str    = f"  {stars}  {kelly}u" if kelly is not None else ""
-        odd_str      = f"{odd:.2f}" if isinstance(odd, float) else str(odd)
+        follow_icon = "📌" if followed else "⚪"
+        units_str   = f"  {stars}  {kelly}u" if kelly is not None else ""
+        odd_str     = f"{odd:.2f}" if isinstance(odd, float) else str(odd)
+        edge_str    = f"{float(edge):+.1%}" if edge else "+0.0%"
+
+        # Delta vs morning snapshot (odds movement indicator)
+        delta_str = ""
+        if not no_prev:
+            dl = _delta_line(s, prev_signals)
+            if dl:
+                delta_str = dl.strip()
 
         print(f"\n  {i}. {follow_icon}  {match}  ({sport})")
         print(f"     Pick: {pick} @ {odd_str}{units_str}")
-
-        if no_prev:
-            print(f"     No previous run to compare")
-        else:
-            dl = _delta_line(s, prev_signals)
-            if dl:
-                print(f"    {dl}")
+        ev_line = f"     Edge: {edge_str} | EV: {s.expected_value:+.1%}"
+        if delta_str:
+            ev_line += f"  {delta_str}"
+        print(ev_line)
+        if justification:
+            jfx_prefix = "🔄💡" if regenerated else "💡"
+            print(f"     {jfx_prefix} {justification}")
+        elif regenerated:
+            # Justification was cleared — will be regenerated on next full run
+            print(f"     🔄 Justification will refresh on next run")
+        print(f"     {s.id}")
 
     followed_count   = sum(1 for s in signals if s.id in followed_ids)
     available_count  = len(signals)

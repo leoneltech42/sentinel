@@ -75,16 +75,33 @@ class OddsAPIClient:
         # Discard events that have already started — in-play odds are volatile
         # and meaningless for pre-match value betting.
         now = datetime.now(timezone.utc)
-        raw_events: list[dict[str, Any]] = [
-            ev for ev in resp.json()
+        today = now.date()
+        all_events: list[dict[str, Any]] = resp.json()
+        pre_match: list[dict[str, Any]] = [
+            ev for ev in all_events
             if datetime.fromisoformat(
                 ev["commence_time"].replace("Z", "+00:00")
             ) > now
         ]
-        skipped = len(resp.json()) - len(raw_events)
-        if skipped:
-            logging.info("Skipped %d in-play event(s) for %s", skipped, sport_key)
-        return [self._to_event(sport_key, ev) for ev in raw_events]
+        skipped_inplay = len(all_events) - len(pre_match)
+        if skipped_inplay:
+            logging.info("Skipped %d in-play event(s) for %s", skipped_inplay, sport_key)
+
+        # Build RawEventData first so we can filter on the already-parsed event_at.
+        events = [self._to_event(sport_key, ev) for ev in pre_match]
+
+        # Restrict to games starting today (UTC). Future-dated lines (tomorrow+)
+        # vary wildly between runs as bookmakers open/close their markets, causing
+        # spurious signal churn. We only model games we can track and resolve same-day.
+        today_events = [e for e in events if e.event_at.date() == today]
+        n_future = len(events) - len(today_events)
+        if n_future:
+            logging.info(
+                "Filtered %d future-date event(s) (tomorrow or later) for %s",
+                n_future, sport_key,
+            )
+
+        return today_events
 
     def fetch_all(self) -> list[RawEventData]:
         events: list[RawEventData] = []

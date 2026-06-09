@@ -80,6 +80,30 @@ def get_or_create_domain(session: Session, adapter: Adapter) -> Domain:
     return domain
 
 
+def _should_regenerate_justification(
+    old_signal: "Signal",
+    new_signal_data: "Any",
+) -> bool:
+    """Return True when the justification text stored on old_signal is stale.
+
+    Staleness criteria (domain-agnostic — uses signal fields only):
+      * The pick changed (different team / selection).
+      * The expected value moved by more than 10 percentage points — a
+        meaningful shift that invalidates the reasoning behind the old text.
+
+    When True the caller clears features['justification'] = None before writing,
+    so the adapter generates a fresh blurb on the next generate_signals() call.
+    When False the caller copies the old justification into the new features dict
+    so it is preserved across minor odds-noise upserts.
+    """
+    old_pick = old_signal.features.get("pick")
+    new_pick = new_signal_data.features.get("pick")
+    if old_pick != new_pick:
+        return True
+    ev_delta = abs(new_signal_data.expected_value - old_signal.expected_value)
+    return ev_delta > 0.10   # 10 pp threshold
+
+
 def run_pipeline(session: Session, adapter: Adapter) -> ModelRun:
     """Ingest fresh data, run the model, and persist the resulting signals."""
     domain = get_or_create_domain(session, adapter)
@@ -169,9 +193,26 @@ def run_pipeline(session: Session, adapter: Adapter) -> ModelRun:
             conf_delta = abs(sd.confidence - existing.confidence)
             ev_delta = abs(sd.expected_value - existing.expected_value)
             if conf_delta > _UPSERT_THRESHOLD or ev_delta > _UPSERT_THRESHOLD:
+                # Decide whether to keep or clear the stored justification text.
+                # Work on a copy so we never mutate the SignalData dataclass in-place.
+                new_features = dict(sd.features)
+                if _should_regenerate_justification(existing, sd):
+                    # Pick changed or EV moved >10pp — old reasoning is stale.
+                    # Clear it so the adapter produces fresh text on the next run.
+                    new_features["justification"] = None
+                    new_features["justification_regenerated"] = True
+                    logging.info("justification cleared for signal %s (stale pick/ev)",
+                                 existing.id)
+                else:
+                    # Minor odds drift — preserve the existing justification text
+                    # to avoid burning LLM quota on near-identical blurbs.
+                    old_justification = existing.features.get("justification")
+                    new_features["justification"] = old_justification
+                    new_features.pop("justification_regenerated", None)
+
                 existing.confidence = sd.confidence
                 existing.expected_value = sd.expected_value
-                existing.features = sd.features
+                existing.features = new_features
                 existing.model_run_id = run.id   # tie to current run for display
                 existing.updated_at = datetime.now(timezone.utc)
                 logging.info("upserted signal %s  pick=%s  conf_delta=%.3f  ev_delta=%.3f",

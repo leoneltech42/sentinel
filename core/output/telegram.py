@@ -201,54 +201,61 @@ def _format_refresh(
 
     no_prev = not prev_signals
 
-    for s in signals:
+    for i, s in enumerate(signals, 1):
         f        = s.features
+        home     = _esc(str(f.get("home_team", "?")))
+        away     = _esc(str(f.get("away_team", "?")))
         pick     = _esc(str(f.get("pick", "?")))
-        match    = _esc(str(f.get("match", "?")))
-        # Build "pick vs opponent" label
-        home     = f.get("home_team", "")
-        away     = f.get("away_team", "")
-        pick_val = f.get("pick", "")
-        opponent = away if pick_val == home else home
-        opp_str  = _esc(str(opponent)) if opponent else _esc(match)
-
         odd      = f.get("best_odd", "?")
+        edge     = f.get("edge", 0.0)
         kelly    = f.get("kelly_units")
         stars    = f.get("star_rating", "")
         followed = s.id in followed_ids
+        justification = f.get("justification")
+        regenerated   = f.get("justification_regenerated", False)
 
         follow_icon = "&#128204;" if followed else "&#9898;"   # 📌 or ⚪
         units_str   = f"  {stars}  {kelly}u" if kelly is not None else ""
         odd_str     = f"{odd:.2f}" if isinstance(odd, float) else str(odd)
+        edge_str    = f"{float(edge):+.1%}" if edge else "+0.0%"
 
-        lines.append(f"{follow_icon} {opp_str}")
-        lines.append(f"   Pick: {pick} @ {odd_str}{units_str}")
-        justification = f.get("justification")
-        lines.append(f"<i>&#128161; {_esc(justification)}</i>" if justification else "")
-        lines.append(f"<code>python -m scripts.track follow {str(s.id)[:8]} </code>")
-
-        if no_prev:
-            lines.append("No previous run to compare")
-        else:
+        # Odds-movement delta vs morning snapshot
+        delta_part = ""
+        if not no_prev:
             raw_key = str(s.raw_event_id)
-            snap    = prev_signals.get(raw_key)
+            snap = prev_signals.get(raw_key)
             if snap is None:
-                lines.append("&#128994; New pick")   # 🆕 approximation via green circle
+                delta_part = "  &#128994; New pick"   # 🆕 approximation via green circle
             else:
                 prev_odd   = snap.get("best_odd")
                 prev_kelly = snap.get("kelly_units")
                 parts: list[str] = []
                 if (odd is not None and prev_odd is not None
                         and abs(float(odd) - float(prev_odd)) > 0.02):
-                    icon = "&#128200;" if float(odd) > float(prev_odd) else "&#128201;"  # 📈 / 📉
+                    icon = "&#128200;" if float(odd) > float(prev_odd) else "&#128201;"
                     parts.append(f"{icon} {prev_odd}&#8594;{odd_str}")
                 if (kelly is not None and prev_kelly is not None
                         and abs(float(kelly) - float(prev_kelly)) > 0.2):
                     arrow = "&#8593;" if float(kelly) > float(prev_kelly) else "&#8595;"
                     parts.append(f"Kelly: {prev_kelly}u&#8594;{kelly}u {arrow}")
                 if parts:
-                    lines.append("  |  ".join(parts))
-                # no changes → omit entirely (no text)
+                    delta_part = "  " + "  |  ".join(parts)
+
+        lines.append(f"{i}. {follow_icon} <b>{home} vs {away}</b>")
+        lines.append(f"   Pick: {pick} @ {odd_str}{units_str}")
+        ev_line = f"   Edge: {edge_str} | EV: {s.expected_value:+.1%}"
+        if delta_part:
+            ev_line += delta_part
+        lines.append(ev_line)
+        # Justification line: 🔄💡 if regenerated (stale, will refresh), else 💡
+        if justification:
+            regen_prefix = "&#128260;&#128161; " if regenerated else "&#128161; "  # 🔄💡 or 💡
+            lines.append(f"<i>{regen_prefix}{_esc(justification)}</i>")
+        elif regenerated:
+            lines.append("<i>&#128260; Justification will refresh on next run</i>")
+        else:
+            lines.append("")  # blank line (no justification yet — first run)
+        lines.append(f"<code>python -m scripts.track follow {str(s.id)[:8]} </code>")
         lines.append("")
 
     followed_count  = sum(1 for s in signals if s.id in followed_ids)
