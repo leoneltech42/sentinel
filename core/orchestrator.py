@@ -171,28 +171,29 @@ def run_pipeline(session: Session, adapter: Adapter) -> ModelRun:
 
         pick = sd.features.get("pick")
 
-        # Look for a pre-existing signal for the same (raw_event, signal_type, pick).
-        existing: Signal | None = next(
-            (
-                s for s in session.scalars(
-                    select(Signal).where(
-                        Signal.domain_id == domain.id,
-                        Signal.raw_event_id == raw.id,
-                        Signal.signal_type == sd.signal_type,
-                    )
-                ).all()
-                if s.features.get("pick") == pick
-            ),
-            None,
-        )
+        # Look for a pre-existing active signal for the same (raw_event, signal_type).
+        # Intentionally does NOT filter by pick — one game = one signal maximum.
+        # A pick flip updates the existing row in place rather than creating a
+        # duplicate with the opposite selection.
+        existing: Signal | None = session.scalars(
+            select(Signal).where(
+                Signal.domain_id == domain.id,
+                Signal.raw_event_id == raw.id,
+                Signal.signal_type == sd.signal_type,
+                Signal.status == "active",
+            )
+        ).first()
 
         if existing is not None:
-            if existing.status != "active":
-                # Historical record — never mutate resolved, void, or expired signals.
-                continue
+            # Historical records are never touched; active-only guard already in WHERE.
+            old_pick = existing.features.get("pick")
+            pick_changed = old_pick != pick
+
             conf_delta = abs(sd.confidence - existing.confidence)
-            ev_delta = abs(sd.expected_value - existing.expected_value)
-            if conf_delta > _UPSERT_THRESHOLD or ev_delta > _UPSERT_THRESHOLD:
+            ev_delta   = abs(sd.expected_value - existing.expected_value)
+
+            # Always update when the pick flips; otherwise respect the noise threshold.
+            if pick_changed or conf_delta > _UPSERT_THRESHOLD or ev_delta > _UPSERT_THRESHOLD:
                 # Decide whether to keep or clear the stored justification text.
                 # Work on a copy so we never mutate the SignalData dataclass in-place.
                 new_features = dict(sd.features)
@@ -210,13 +211,20 @@ def run_pipeline(session: Session, adapter: Adapter) -> ModelRun:
                     new_features["justification"] = old_justification
                     new_features.pop("justification_regenerated", None)
 
-                existing.confidence = sd.confidence
+                existing.confidence     = sd.confidence
                 existing.expected_value = sd.expected_value
-                existing.features = new_features
-                existing.model_run_id = run.id   # tie to current run for display
-                existing.updated_at = datetime.now(timezone.utc)
-                logging.info("upserted signal %s  pick=%s  conf_delta=%.3f  ev_delta=%.3f",
-                             existing.id, pick, conf_delta, ev_delta)
+                existing.features       = new_features
+                existing.valid_for_date = sd.valid_for_date
+                existing.valid_until    = sd.valid_until
+                existing.model_run_id   = run.id
+                existing.updated_at     = datetime.now(timezone.utc)
+
+                if pick_changed:
+                    logging.info("updated signal %s  pick changed: %s -> %s",
+                                 existing.id, old_pick, pick)
+                else:
+                    logging.info("updated signal %s  pick=%s  conf_delta=%.3f  ev_delta=%.3f",
+                                 existing.id, pick, conf_delta, ev_delta)
             else:
                 logging.info("skipped signal (no significant change)  pick=%s  "
                              "conf_delta=%.4f  ev_delta=%.4f", pick, conf_delta, ev_delta)

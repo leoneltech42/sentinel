@@ -16,7 +16,16 @@ from adapters.betting.ingestion import SPORT_KEYS
 
 
 def _future(hours: int) -> str:
-    dt = datetime.now(timezone.utc) + timedelta(hours=hours)
+    """Return an ISO timestamp that is `hours` ahead of now, but always on
+    today's UTC date.
+
+    Anchors to today at 14:00 UTC instead of wall-clock now + hours so that
+    the generated commence_time stays on today's date regardless of when
+    --mock is run (avoids crossing UTC midnight on late-evening runs).
+    """
+    today = datetime.now(timezone.utc).date()
+    anchor = datetime(today.year, today.month, today.day, 14, 0, 0, tzinfo=timezone.utc)
+    dt = anchor + timedelta(hours=hours)
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
