@@ -32,7 +32,37 @@ from sqlalchemy import cast, select, String
 from sqlalchemy.orm import selectinload
 
 from core.db import SessionLocal, init_db
-from core.models import Domain, Signal, SignalOutcome, User, UserSignalView
+from core.models import Domain, ModelRun, Signal, SignalOutcome, User, UserSignalView
+
+# Current production model. pnl/global default to this version only — mixing
+# older versions (which had known calibration issues, see CLAUDE.md decision
+# log) into the live scorecard would distort the read on the current model.
+DEFAULT_VERSION = "poisson_v0.3.0"
+
+
+def _parse_version_filter(version_arg: str | None) -> str | None:
+    """Returns the model_version string to filter on, or None for all versions.
+
+    None (no --version flag)   -> DEFAULT_VERSION (current model only)
+    "all"                      -> None (no filter — every version)
+    "v0.2.0" / "poisson_v0.2.0" -> "poisson_v0.2.0" (accepts either form)
+    """
+    if version_arg is None:
+        return DEFAULT_VERSION
+    if version_arg.lower() == "all":
+        return None
+    if not version_arg.startswith("poisson_"):
+        return f"poisson_{version_arg}"
+    return version_arg
+
+
+def _version_header(version_filter: str | None) -> str:
+    """Human-readable line describing which model version is in scope."""
+    if version_filter is None:
+        return "Model: all versions"
+    if version_filter == DEFAULT_VERSION:
+        return f"Model: {version_filter}  (use --version all to see all picks)"
+    return f"Model: {version_filter}"
 
 # Ensure Unicode output (tick marks, currency symbols) works on Windows
 # terminals that default to cp1252.  errors='replace' prevents hard crashes
@@ -67,10 +97,16 @@ def main() -> None:
                        help="show only picks for today")
     p_pnl.add_argument("--date", metavar="YYYY-MM-DD", default=None,
                        help="show only picks for a specific date")
+    p_pnl.add_argument("--version", metavar="VERSION", default=None,
+                       help="filter by model version (default: "
+                            f"{DEFAULT_VERSION} only; 'all' for every version)")
 
     # global
-    sub.add_parser("global",
+    p_global = sub.add_parser("global",
                    help="show system-wide P&L across all resolved signals")
+    p_global.add_argument("--version", metavar="VERSION", default=None,
+                          help="filter by model version (default: "
+                               f"{DEFAULT_VERSION} only; 'all' for every version)")
 
     args = parser.parse_args()
     init_db()
@@ -79,7 +115,7 @@ def main() -> None:
         if args.cmd == "follow":
             _cmd_follow(session, args.signal_uuid, args.stake)
         elif args.cmd == "global":
-            _cmd_global(session)
+            _cmd_global(session, version_filter=_parse_version_filter(args.version))
         else:
             # Resolve date filter: --today overrides --date
             filter_date: date | None = None
@@ -87,7 +123,8 @@ def main() -> None:
                 filter_date = datetime.now(timezone.utc).date()
             elif getattr(args, "date", None):
                 filter_date = date.fromisoformat(args.date)
-            _cmd_pnl(session, filter_date=filter_date)
+            _cmd_pnl(session, filter_date=filter_date,
+                     version_filter=_parse_version_filter(args.version))
 
 
 # --------------------------------------------------------------------------- #
@@ -208,7 +245,8 @@ def _cmd_follow(session, signal_uuid_str: str, stake: float) -> None:
 # pnl                                                                          #
 # --------------------------------------------------------------------------- #
 
-def _cmd_pnl(session, filter_date: date | None = None) -> None:
+def _cmd_pnl(session, filter_date: date | None = None,
+             version_filter: str | None = None) -> None:
     user = _get_or_create_user(session)
 
     stmt = (
@@ -223,15 +261,27 @@ def _cmd_pnl(session, filter_date: date | None = None) -> None:
         )
         .order_by(UserSignalView.viewed_at.desc())
     )
+    needs_signal_join = filter_date is not None or version_filter is not None
+    if needs_signal_join:
+        stmt = stmt.join(Signal, UserSignalView.signal_id == Signal.id)
     if filter_date is not None:
-        stmt = stmt.join(Signal, UserSignalView.signal_id == Signal.id).where(
-            Signal.valid_for_date == filter_date
+        stmt = stmt.where(Signal.valid_for_date == filter_date)
+    if version_filter is not None:
+        stmt = (
+            stmt.join(ModelRun, Signal.model_run_id == ModelRun.id)
+            .where(ModelRun.model_version == version_filter)
         )
 
     views = session.scalars(stmt).all()
 
     if filter_date is not None and not views:
-        print(f"\n  No followed picks for {filter_date}.\n")
+        print(f"\n  {_version_header(version_filter)}")
+        print(f"  No followed picks for {filter_date}.\n")
+        return
+
+    if not views:
+        print(f"\n  {_version_header(version_filter)}")
+        print(f"  No followed picks match this filter.\n")
         return
 
     # -- partition by status -------------------------------------------------
@@ -256,6 +306,8 @@ def _cmd_pnl(session, filter_date: date | None = None) -> None:
     print(f"\n{'='*64}")
     print(f"  SENTINEL - Personal P&L")
     print(f"{'='*64}")
+    print(f"  {_version_header(version_filter)}")
+    print()
 
     print(f"  Followed picks: {len(views)}")
 
@@ -307,7 +359,7 @@ def _cmd_pnl(session, filter_date: date | None = None) -> None:
 # global                                                                       #
 # --------------------------------------------------------------------------- #
 
-def _cmd_global(session) -> None:
+def _cmd_global(session, version_filter: str | None = None) -> None:
     """System-wide P&L across all resolved betting signals.
 
     No user context required — this is the full model scorecard.
@@ -324,17 +376,30 @@ def _cmd_global(session) -> None:
       void: profit = 0
       ROI  = net_kelly / total_staked_kelly * 100
     Signals without kelly_units (stored before 2026-06-03) fall back to 1.0u.
+
+    version_filter: model_version to restrict to (None = all versions).
+      Defaults to DEFAULT_VERSION at the CLI layer — mixing older model
+      versions with known calibration issues into the live scorecard would
+      distort the read on the current model (see CLAUDE.md decision log).
     """
     today = datetime.now(timezone.utc).date()
 
-    # All betting signals, newest first
-    all_signals = session.scalars(
+    # All betting signals, newest first — optionally restricted to one
+    # model_version via the ModelRun join (jsonb-free, uses the existing FK).
+    stmt = (
         select(Signal)
         .join(Domain, Signal.domain_id == Domain.id)
         .where(Domain.slug == "betting")
         .options(selectinload(Signal.outcome))
         .order_by(Signal.valid_for_date.desc(), Signal.created_at.desc())
-    ).all()
+    )
+    if version_filter is not None:
+        stmt = (
+            stmt.join(ModelRun, Signal.model_run_id == ModelRun.id)
+            .where(ModelRun.model_version == version_filter)
+        )
+
+    all_signals = session.scalars(stmt).all()
 
     resolved = [s for s in all_signals if s.status == "resolved"]
     voided   = [s for s in all_signals if s.status == "void"]
@@ -374,6 +439,8 @@ def _cmd_global(session) -> None:
     print(f"\n{'='*64}")
     print(f"  SENTINEL — System P&L (betting)")
     print(f"{'='*64}")
+    print(f"  {_version_header(version_filter)}")
+    print()
     print(f"  Generated picks:   {len(all_signals)}")
 
     void_note = f", {len(voided)} void" if voided else ""
@@ -414,6 +481,33 @@ def _cmd_global(session) -> None:
             print(f"    {label}:  {pct:.1f}%  correct  (n={len(band_res)})")
         else:
             print(f"    {label}:  --  (n=0)")
+
+    # -- breakdown by model version (only when showing all versions) -----------
+    if version_filter is None:
+        # Signal has no ORM relationship to ModelRun — resolve model_version
+        # via a small id->version lookup rather than per-row lazy loads.
+        run_ids = {s.model_run_id for s in resolved}
+        version_by_run_id: dict[uuid.UUID, str] = dict(
+            session.execute(
+                select(ModelRun.id, ModelRun.model_version)
+                .where(ModelRun.id.in_(run_ids))
+            ).all()
+        ) if run_ids else {}
+
+        by_version: dict[str, list[Signal]] = {}
+        for s in resolved:
+            ver = version_by_run_id.get(s.model_run_id, "unknown")
+            by_version.setdefault(ver, []).append(s)
+        if by_version:
+            print()
+            print(f"  By model version:")
+            for ver in sorted(by_version):
+                v_resolved = by_version[ver]
+                v_won = [s for s in v_resolved if s.outcome and s.outcome.was_correct]
+                v_lost = [s for s in v_resolved if s.outcome and not s.outcome.was_correct]
+                pct = (len(v_won) / len(v_resolved) * 100) if v_resolved else 0.0
+                print(f"    {ver:<16} {len(v_resolved):>3} picks  "
+                      f"{len(v_won)}W/{len(v_lost)}L  {pct:.1f}%")
 
     # -- last 10 resolved picks ------------------------------------------------
     last_10 = resolved[:10]   # already sorted newest-first

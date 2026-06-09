@@ -85,9 +85,6 @@ def _format_picks(signals: list[Signal], for_date: date, domain: str = "betting"
     lines.append(f"{n} pick{'s' if n != 1 else ''} today. "
                  "Paper trade only &#8212; track your results.")
     lines.append("")
-    lines.append("To follow a pick: "
-                 "<code>python -m scripts.track follow &lt;id&gt; &lt;stake&gt;</code>")
-    lines.append("")
     lines.append("<i>1u = 1% of bankroll · 1/10 Kelly sizing</i>")
     return "\n".join(lines)
 
