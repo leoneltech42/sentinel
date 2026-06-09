@@ -67,11 +67,18 @@ Built and working:
   stores final score in `outcome_metadata`; `user_signal_views.pnl` updated
   at resolution time
 - **Signal upsert:** refreshes an active signal when confidence or EV delta
-  > 0.5%; resolved/void signals are immutable
+  > 0.5%; resolved/void/expired signals are immutable. Justification
+  preserved across minor upserts; cleared and flagged for regeneration when
+  pick changes team or EV delta > 10pp (`justification_regenerated` in features).
+- **Today-only ingestion:** events filtered to `commence_time.date() == today
+  UTC` at ingestion time — eliminates tomorrow-game churn between runs.
+  Logs "Filtered N future-date events (tomorrow or later)".
 - **Today-only display:** `valid_for_date == today` filter on all terminal and
   Telegram output — future-dated signals stored but never surfaced early
 - **Personal tracking:** `scripts/track.py follow <uuid> <stake>` and
-  `scripts/track.py pnl` — reads `UserSignalView` stake/pnl/followed
+  `scripts/track.py pnl` — reads `UserSignalView` stake/pnl/followed.
+  Both `pnl` and `global` default to `poisson_v0.3.0` only; use
+  `--version all` or `--version v0.X.X` for historical comparison.
 - **Backtest:** `scripts/backtest.py` — MLB historical backtesting (Retrosheet
   2025, MLB Stats API 2026+), point-in-time stats, confidence band output;
   results saved to `scripts/backtest_results*.csv` (gitignored)
@@ -91,13 +98,31 @@ Built and working:
     vice-versa; all signal queries join `Signal → Domain` and filter by slug
 - **Two domains running in parallel:** betting + flights, isolated by
   `domain_id`; `core/` has zero domain-specific knowledge
+- **poisson_v0.3.0** (2026-06-08): three model improvements applied together —
+  starting pitcher ERA adjustment (`starter_era / league_avg_era` ratio),
+  70/30 recent-form blend (season avg + last-15 games), 50/50 tie
+  redistribution (extra innings ≈ coin flip). Model version tracked in
+  `model_runs` for A/B comparison against prior versions.
+- **LLMJustifier:** generic OpenAI-compatible client for pick justifications
+  (`adapters/betting/justification.py`). Default: Groq Llama 3.3 70B free
+  tier. Configured via `LLM_JUSTIFIER_API_KEY` / `LLM_JUSTIFIER_BASE_URL` /
+  `LLM_JUSTIFIER_MODEL`. `--mock` never calls the LLM; failures degrade
+  gracefully (`justification: None` stored, no crash).
+- **Refresh display:** matches daily picks format — `📌/⚪` follow status,
+  Edge/EV line, `💡` justification, `🔄💡` when justification was cleared and
+  will regenerate, delta indicators (`📈/📉`) for odds movement vs morning run.
+- **World Cup disabled by default:** `active_sports=['mlb']` in
+  `BettingAdapter`. World Cup stays registered in `ALL_SPORT_KEYS` and can
+  be re-enabled via `domains.config` jsonb — it never generated valid picks
+  because the static ratings map is a placeholder with no real stats feed.
 
 Live paper trading status (update as results come in):
 - Started: 2026-05-31
-- Picks resolved: 29 (12W 17L, 41.4% — model v0.1.0, HA=1.10 bias confirmed)
-- Model updated to v0.2.0 on 2026-06-04 (HA=1.10 → 1.04)
-- Backtest (May 2026, 419 games): 58.7% accuracy, well-calibrated
-- Gate to Phase 1: 30+ resolved picks with v0.2.0, win rate > 53%
+- v0.1.0: 30 picks resolved (13W/17L, 43.3%) — HA=1.10 bias confirmed
+- v0.2.0: 28 picks resolved (10W/18L, 35.7%) — HA fixed but still underperforming
+- v0.3.0 started: 2026-06-08 (pitcher ERA, recent form, 50/50 tie split)
+- v0.3.0 picks resolved: 0 — running daily, gate at 30 resolved picks
+- Gate to Phase 1: 30+ v0.3.0 resolved picks, win rate > 53%
 
 Intentionally deferred — do not implement without discussion:
 - **Soccer / World Cup model:** deferred; MLB has 162 games/season, faster
@@ -126,7 +151,7 @@ Intentionally deferred — do not implement without discussion:
 - `signals.updated_at` was added via `ALTER TABLE` fallback in `init_db()`,
   not Alembic. SQLAlchemy `onupdate=_now` keeps it current on every ORM write.
 - Signal upsert fires when confidence **or** EV delta > 0.5%, and only on
-  `status == "active"` signals — resolved/void are never overwritten.
+  `status == "active"` signals — resolved/void/expired are never overwritten.
 - Daily output is filtered to `valid_for_date == today`; signals for future
   dates are stored but not displayed until their date arrives.
 - `SENTINEL_USER_ID` in `.env` is a Phase 0 shortcut. Phase 1 replaces
@@ -158,9 +183,6 @@ Intentionally deferred — do not implement without discussion:
   (e.g. `KeyError: 'match'` when flights signals reach the betting renderer).
 - `run_resolution` in the orchestrator is already domain-filtered by
   `domain_id` via the adapter's `domain_slug` — confirmed, no change needed.
-- **Do not tune model hyperparameters until 30+ resolved picks** — 8 picks is
-  statistically irrelevant; the backtest (419 games) is the reliable signal for
-  calibration direction.
 - **`HOME_ADVANTAGE = 1.04` chosen to match empirical MLB home win rate (~53%).**
   At 1.10 the model generates 72.8% home picks and suppresses away value. Backtest
   confirms overall accuracy is insensitive to this parameter (57.8–58.2% across
@@ -171,6 +193,34 @@ Intentionally deferred — do not implement without discussion:
   their true 64–67% probability. At HA=1.04, 4 of the 7 losing 70%+ picks are
   filtered out entirely. `model_version` bumped to `poisson_v0.2.0`; all future
   signals are tagged for A/B comparison against v0.1.0 picks in the DB.
+- **poisson_v0.3.0 (2026-06-08): three fixes applied together** — pitcher ERA
+  adjustment using `starter_era / league_avg_era` ratio (corrected direction:
+  a good opposing starter suppresses your team's expected runs), 70/30
+  recent-form blend (season avg + last-15 games via MLB Stats API), 50/50 tie
+  redistribution (extra innings ≈ coin flip; prior proportional split was
+  wrong in theory). `model_version` bumped; all signals tagged for comparison.
+- **LLMJustifier is generic** — `base_url` and `model` are configurable. Switching
+  from Groq to Claude or OpenAI requires only env var changes, zero code changes.
+  Failures degrade gracefully: `justification: None` stored, pipeline continues.
+- **Today-only ingestion filter uses UTC date** for consistency with the rest of
+  the system. Games that commence after midnight UTC (e.g. 00:30 UTC) appear
+  as "today" UTC even if they feel like "last night" in ART — acceptable
+  tradeoff; the alternative (ART-aware filtering) would add timezone complexity
+  to a layer that is otherwise UTC-only.
+- **Justification regeneration threshold: pick team change OR EV delta > 10pp.**
+  Below that threshold, the existing justification text is preserved across
+  minor odds-noise upserts to avoid unnecessary LLM quota burn. When cleared,
+  `justification_regenerated = True` is written to `features` (jsonb — no
+  schema change) and the `🔄` indicator appears in CLI and Telegram refresh.
+- **P&L commands default to the current model version (v0.3.0)** — never
+  silently mix model versions in analysis. `--version all` shows all versions
+  with a breakdown table; `--version v0.X.X` selects a specific version.
+  Older models had known calibration issues; mixing them would distort the
+  current model's read.
+- **`active_sports=['mlb']` default** — World Cup excluded at the adapter
+  level (not by removing it from `ALL_SPORT_KEYS`). It never generated valid
+  picks because `WORLD_CUP_RATINGS` is a placeholder. Can be re-enabled via
+  `domains.config` jsonb when a real ratings feed is available.
 
 ## Conventions
 
@@ -203,22 +253,26 @@ Intentionally deferred — do not implement without discussion:
   100/month free tier — quota used is logged on every run and recorded in
   `model_runs.hyperparams.serpapi_quota_used`.
 - Backtest results are saved to `scripts/backtest_results*.csv` (gitignored).
+- `python -m scripts.track global --version all` — show all model versions
+  with a per-version breakdown table (picks, W/L, win rate).
+- `python -m scripts.track pnl --version v0.X.X` — personal P&L filtered to
+  a specific model version. Default for both commands is `poisson_v0.3.0`.
 
 ## Phase 0 remaining work
 
-**Gate to Phase 1:** 30+ resolved picks with v0.2.0, win rate > 53%.
-Currently at 29 resolved picks (v0.1.0). Running daily with v0.2.0 from 2026-06-04.
+**Gate to Phase 1:** 30+ poisson_v0.3.0 resolved picks, win rate > 53%.
+Currently at 0 resolved v0.3.0 picks. Running daily from 2026-06-08.
 
-Decision tree at 30+ v0.2.0 picks:
+Decision tree at 30 v0.3.0 picks:
 - Win rate **> 53%** → start Phase 1
-- Win rate **45–53%** → consider recency weighting in MLBStatsProvider (last-15-games blend)
-- Win rate **< 45%** → investigate systematic model issue first
+- Win rate **45–53%** → evaluate — may proceed with caution or tune further
+- Win rate **< 45%** → investigate systematic model issue before Phase 1
 
-**Next model improvement (consider at 50+ v0.2.0 picks):**
-- Add recency weighting to `MLBStatsProvider.runs_per_game()`: blend season avg (70%)
-  with last-15-games avg (30%). Evidence: WSH, NYY, MIL significantly underscored
-  their season RPG averages in observed losses (avg 2.3 actual vs 5.8 expected for WSH).
-  Defer until HA fix effect is measurable — needs 20+ v0.2.0 picks to isolate.
+Next model improvement (consider at 50+ v0.3.0 picks, if still miscalibrated):
+- Recency weighting already implemented (70/30 blend in `MLBStatsProvider`)
+- If still underperforming: consider negative binomial distribution (handles
+  overdispersion better than Poisson for baseball) or additional features
+  (bullpen ERA, park factors, rest days)
 
 Phase 1 will include:
 - FastAPI service (`api/` scaffold already exists)
