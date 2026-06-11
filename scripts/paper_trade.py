@@ -374,40 +374,63 @@ def _print_flights_price_summary(raw_events: list) -> None:
 # --------------------------------------------------------------------------- #
 
 def _verify_outcomes_supabase(session, target_date: date) -> None:
-    """After resolution: print signal_outcomes stats for target_date (betting only)."""
-    from core.models import Domain
-    rows = session.scalars(
-        select(SignalOutcome)
-        .join(Signal, SignalOutcome.signal_id == Signal.id)
-        .join(Domain, Signal.domain_id == Domain.id)
-        .where(Signal.valid_for_date == target_date, Domain.slug == "betting")
-        .options(selectinload(SignalOutcome.signal))
-    ).all()
+    """After resolution: print signal_outcomes stats for target_date (betting only).
 
-    total = len(rows)
-    correct = sum(1 for r in rows if r.was_correct)
-    print(f"  --- Supabase signal_outcomes for {target_date} ---")
-    print(f"  Outcome rows created : {total}")
-    if total:
-        print(f"  Correct              : {correct}/{total}  "
-              f"({correct/total:.0%} win rate)")
-        clv_rows = [r for r in rows if r.outcome_metadata.get("clv") is not None]
-        if clv_rows:
-            avg_clv = sum(r.outcome_metadata["clv"] for r in clv_rows) / len(clv_rows)
-            print(f"  CLV (avg)            : {avg_clv:+.2%}  ({len(clv_rows)} picks with data)")
-        else:
-            print("  CLV                  : not available (historical endpoint not on free tier)")
+    Two sections:
+      1. Results for target_date  — signals whose valid_for_date == target_date.
+      2. Backfilled from previous days — signals from the 7 days prior that were
+         resolved in the same run (shown only when any exist).
+    """
+    from core.models import Domain
+
+    def _fetch(date_clause) -> list:
+        return session.scalars(
+            select(SignalOutcome)
+            .join(Signal, SignalOutcome.signal_id == Signal.id)
+            .join(Domain, Signal.domain_id == Domain.id)
+            .where(date_clause, Domain.slug == "betting")
+            .options(selectinload(SignalOutcome.signal))
+        ).all()
+
+    def _print_section(rows: list, header: str) -> None:
+        total   = len(rows)
+        correct = sum(1 for r in rows if r.was_correct)
+        print(f"  --- {header} ---")
+        print(f"  Outcome rows created : {total}")
+        if total:
+            print(f"  Correct              : {correct}/{total}  "
+                  f"({correct/total:.0%} win rate)")
+            clv_rows = [r for r in rows if r.outcome_metadata.get("clv") is not None]
+            if clv_rows:
+                avg_clv = sum(r.outcome_metadata["clv"] for r in clv_rows) / len(clv_rows)
+                print(f"  CLV (avg)            : {avg_clv:+.2%}  "
+                      f"({len(clv_rows)} picks with data)")
+            else:
+                print("  CLV                  : not available "
+                      "(historical endpoint not on free tier)")
+            print()
+            for r in rows:
+                f    = r.signal.features
+                icon = "[W]" if r.was_correct else "[L]"
+                hs   = r.outcome_metadata.get("home_score", "?")
+                as_  = r.outcome_metadata.get("away_score", "?")
+                winner = r.outcome_metadata.get("winner", "?")
+                date_tag = (f"  [{r.signal.valid_for_date}]"
+                            if r.signal.valid_for_date != target_date else "")
+                print(f"  {icon}  {f.get('match','?'):<42}  "
+                      f"pick={f.get('pick','?'):<30}  "
+                      f"score={as_}-{hs}  winner={winner}{date_tag}")
         print()
-        for r in rows:
-            f = r.signal.features
-            icon = "[W]" if r.was_correct else "[L]"
-            hs = r.outcome_metadata.get("home_score", "?")
-            as_ = r.outcome_metadata.get("away_score", "?")
-            winner = r.outcome_metadata.get("winner", "?")
-            print(f"  {icon}  {f.get('match','?'):<42}  "
-                  f"pick={f.get('pick','?'):<30}  "
-                  f"score={as_}-{hs}  winner={winner}")
-    print()
+
+    rows = _fetch(Signal.valid_for_date == target_date)
+    _print_section(rows, f"Supabase signal_outcomes for {target_date}")
+
+    cutoff = target_date - timedelta(days=7)
+    backfill = _fetch(
+        (Signal.valid_for_date >= cutoff) & (Signal.valid_for_date < target_date)
+    )
+    if backfill:
+        _print_section(backfill, "Backfilled from previous days")
 
 
 def _verify_supabase(session, today: date, domain: str) -> None:
@@ -461,16 +484,24 @@ def _send_picks_notification(signals: list[Signal], for_date: date, domain: str)
 
 def _send_results_notification(session, for_date: date, domain: str) -> None:
     from core.output import notify_results
+    # Include today's picks PLUS any backfill from the preceding 7 days.
+    # _format_results() partitions them into two sections by valid_for_date.
+    cutoff = for_date - timedelta(days=7)
     signals = list(session.scalars(
         select(Signal)
-        .where(Signal.valid_for_date == for_date)
+        .where(
+            Signal.valid_for_date >= cutoff,
+            Signal.valid_for_date <= for_date,
+            Signal.status.in_(["resolved", "void"]),
+        )
         .options(selectinload(Signal.outcome))
-        .order_by(Signal.expected_value.desc())
+        .order_by(Signal.valid_for_date.desc(), Signal.expected_value.desc())
     ).all())
     try:
         notify_results(signals, for_date, domain=domain)
-        resolved = sum(1 for s in signals if s.status == "resolved")
-        print(f"  Telegram results notification sent ({resolved} resolved).")
+        resolved = sum(1 for s in signals if s.status == "resolved"
+                       and s.valid_for_date == for_date)
+        print(f"  Telegram results notification sent ({resolved} resolved today).")
     except Exception as exc:
         print(f"  Telegram notification failed (results): {exc}")
 

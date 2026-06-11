@@ -127,57 +127,73 @@ def _format_picks_flights(signals: list[Signal], for_date: date) -> str:
 def _format_results(signals: list[Signal], for_date: date, domain: str = "betting") -> str:
     lines: list[str] = [f"<b>&#128202; Sentinel results &#8212; {for_date}</b>", ""]
 
-    # Partition by status.
-    display   = [s for s in signals if s.status in ("resolved", "void")]
-    pending   = [s for s in signals if s.status == "active"]
-    resolved  = [s for s in signals if s.status == "resolved"]
-    won_count = sum(1 for s in resolved if s.outcome and s.outcome.was_correct)
+    # Partition by valid_for_date: today's picks vs backfill from prior days.
+    today_sigs   = [s for s in signals if s.valid_for_date == for_date]
+    backfill_sigs = [s for s in signals if s.valid_for_date != for_date]
 
-    for i, s in enumerate(display, 1):
-        f    = s.features
-
-        if domain == "flights":
-            origin = _esc(str(f.get("origin", "?")))
-            dest = _esc(str(f.get("destination", "?")))
-            dep = _esc(str(f.get("departure_date", "?")))
-            label = f"{origin}-{dest}  {dep}"
-        else:
-            home = _esc(str(f.get("home_team", "?")))
-            away = _esc(str(f.get("away_team", "?")))
-            pick = _esc(str(f.get("pick", "?")))
-            label = f"<b>{pick}</b> ({home} vs {away})"
-
-        if s.status == "void":
-            lines.append(f"{i}. &#8709; {label}")
-            lines.append("   Void")
-        elif s.status == "resolved" and s.outcome is not None:
-            icon = "&#10003;" if s.outcome.was_correct else "&#10007;"
-            word = "Correct" if s.outcome.was_correct else "Wrong"
+    def _render_section(section: list[Signal], offset: int = 0) -> None:
+        for j, s in enumerate(section, offset + 1):
+            f = s.features
             if domain == "flights":
-                pct = s.outcome.outcome_metadata.get("price_change_pct", "?")
-                lines.append(f"{i}. {icon} {label}")
-                lines.append(f"   {word}  (price {pct:+.1f}%)" if isinstance(pct, float) else f"   {word}")
+                origin = _esc(str(f.get("origin", "?")))
+                dest   = _esc(str(f.get("destination", "?")))
+                dep    = _esc(str(f.get("departure_date", "?")))
+                label  = f"{origin}-{dest}  {dep}"
             else:
-                hs  = s.outcome.outcome_metadata.get("home_score")
-                as_ = s.outcome.outcome_metadata.get("away_score")
-                score = f" {as_}-{hs}" if hs is not None and as_ is not None else ""
-                lines.append(f"{i}. {icon} {label}")
-                lines.append(f"   {word}{score}")
-        lines.append("")
+                home  = _esc(str(f.get("home_team", "?")))
+                away  = _esc(str(f.get("away_team", "?")))
+                pick  = _esc(str(f.get("pick", "?")))
+                label = f"<b>{pick}</b> ({home} vs {away})"
 
-    if not display:
+            if s.status == "void":
+                lines.append(f"{j}. &#8709; {label}")
+                lines.append("   Void")
+            elif s.status == "resolved" and s.outcome is not None:
+                icon = "&#10003;" if s.outcome.was_correct else "&#10007;"
+                word = "Correct" if s.outcome.was_correct else "Wrong"
+                if domain == "flights":
+                    pct = s.outcome.outcome_metadata.get("price_change_pct", "?")
+                    lines.append(f"{j}. {icon} {label}")
+                    lines.append(f"   {word}  (price {pct:+.1f}%)"
+                                 if isinstance(pct, float) else f"   {word}")
+                else:
+                    hs  = s.outcome.outcome_metadata.get("home_score")
+                    as_ = s.outcome.outcome_metadata.get("away_score")
+                    score = f" {as_}-{hs}" if hs is not None and as_ is not None else ""
+                    lines.append(f"{j}. {icon} {label}")
+                    lines.append(f"   {word}{score}")
+            lines.append("")
+
+    # --- Section 1: today's picks ---
+    display_today = [s for s in today_sigs if s.status in ("resolved", "void")]
+    pending       = [s for s in today_sigs if s.status == "active"]
+    resolved_today = [s for s in today_sigs if s.status == "resolved"]
+    won_count      = sum(1 for s in resolved_today if s.outcome and s.outcome.was_correct)
+
+    _render_section(display_today)
+
+    if not display_today:
         lines.append("No signals resolved yet.")
         lines.append("")
 
-    total_resolved = len(resolved)
-    if total_resolved:
-        win_rate = won_count / total_resolved
-        lines.append(f"Day: {won_count}/{total_resolved} correct ({win_rate:.0%})")
+    n_resolved = len(resolved_today)
+    if n_resolved:
+        win_rate = won_count / n_resolved
+        lines.append(f"Day: {won_count}/{n_resolved} correct ({win_rate:.0%})")
     else:
         lines.append("Day: no resolved signals yet")
 
     lines.append(f"Pending: {len(pending)} signal{'s' if len(pending) != 1 else ''} "
                  "still unresolved")
+
+    # --- Section 2: backfill (only when present) ---
+    display_backfill = [s for s in backfill_sigs if s.status in ("resolved", "void")]
+    if display_backfill:
+        lines.append("")
+        lines.append("<i>Backfilled from previous days:</i>")
+        lines.append("")
+        _render_section(display_backfill)
+
     return "\n".join(lines)
 
 

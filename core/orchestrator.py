@@ -280,6 +280,15 @@ def run_resolution(session: Session, adapter: Adapter) -> int:
         if outcome is None:
             continue
 
+        # Defensive guard: skip if this signal already has an outcome row.
+        # The UNIQUE(signal_id) constraint on signal_outcomes catches this at
+        # the DB level, but checking here avoids an IntegrityError rollback.
+        existing_outcome = session.scalar(
+            select(SignalOutcome).where(SignalOutcome.signal_id == sig.id)
+        )
+        if existing_outcome:
+            continue
+
         if outcome.metadata.get("void"):
             # Match didn't finish (postponed/suspended/cancelled) — no outcome row.
             sig.status = "void"
