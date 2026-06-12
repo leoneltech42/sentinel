@@ -410,16 +410,19 @@ def _verify_outcomes_supabase(session, target_date: date) -> None:
                       "(historical endpoint not on free tier)")
             print()
             for r in rows:
-                f    = r.signal.features
-                icon = "[W]" if r.was_correct else "[L]"
-                hs   = r.outcome_metadata.get("home_score", "?")
-                as_  = r.outcome_metadata.get("away_score", "?")
+                f      = r.signal.features
+                icon   = "[W]" if r.was_correct else "[L]"
+                hs     = r.outcome_metadata.get("home_score", "?")
+                as_    = r.outcome_metadata.get("away_score", "?")
                 winner = r.outcome_metadata.get("winner", "?")
+                ev_str = f"{r.signal.expected_value:+.1%}"
+                stars  = _confidence_stars(r.signal.confidence)
                 date_tag = (f"  [{r.signal.valid_for_date}]"
                             if r.signal.valid_for_date != target_date else "")
                 print(f"  {icon}  {f.get('match','?'):<42}  "
                       f"pick={f.get('pick','?'):<30}  "
-                      f"score={as_}-{hs}  winner={winner}{date_tag}")
+                      f"score={as_}-{hs}  winner={winner}  "
+                      f"EV {ev_str}  {stars}{date_tag}")
         print()
 
     rows = _fetch(Signal.valid_for_date == target_date)
@@ -605,6 +608,19 @@ def _print_by_date(
 # --------------------------------------------------------------------------- #
 # Domain-specific renderers                                                    #
 # --------------------------------------------------------------------------- #
+
+def _confidence_stars(confidence: float) -> str:
+    """Map model confidence (0–1) to a 5-star display string."""
+    if confidence >= 0.90:
+        return "★★★★★"
+    if confidence >= 0.80:
+        return "★★★★☆"
+    if confidence >= 0.70:
+        return "★★★☆☆"
+    if confidence >= 0.60:
+        return "★★☆☆☆"
+    return "★☆☆☆☆"
+
 
 def _render_betting(signals: list[Signal], label: date, *, show_outcomes: bool) -> None:
     print(f"\n{'='*64}\n  SENTINEL - value bets for {label}\n{'='*64}")

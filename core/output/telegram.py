@@ -124,6 +124,19 @@ def _format_picks_flights(signals: list[Signal], for_date: date) -> str:
     return "\n".join(lines)
 
 
+def _confidence_stars(confidence: float) -> str:
+    """Map model confidence (0–1) to a 5-star display string."""
+    if confidence >= 0.90:
+        return "&#9733;&#9733;&#9733;&#9733;&#9733;"   # ★★★★★
+    if confidence >= 0.80:
+        return "&#9733;&#9733;&#9733;&#9733;&#9734;"   # ★★★★☆
+    if confidence >= 0.70:
+        return "&#9733;&#9733;&#9733;&#9734;&#9734;"   # ★★★☆☆
+    if confidence >= 0.60:
+        return "&#9733;&#9733;&#9734;&#9734;&#9734;"   # ★★☆☆☆
+    return "&#9733;&#9734;&#9734;&#9734;&#9734;"       # ★☆☆☆☆
+
+
 def _format_results(signals: list[Signal], for_date: date, domain: str = "betting") -> str:
     lines: list[str] = [f"<b>&#128202; Sentinel results &#8212; {for_date}</b>", ""]
 
@@ -145,6 +158,10 @@ def _format_results(signals: list[Signal], for_date: date, domain: str = "bettin
                 pick  = _esc(str(f.get("pick", "?")))
                 label = f"<b>{pick}</b> ({home} vs {away})"
 
+            ev_str    = f"{s.expected_value:+.1%}"
+            stars_str = _confidence_stars(s.confidence)
+            ev_stars  = f" · EV {ev_str} · {stars_str}"
+
             if s.status == "void":
                 lines.append(f"{j}. &#8709; {label}")
                 lines.append("   Void")
@@ -161,7 +178,7 @@ def _format_results(signals: list[Signal], for_date: date, domain: str = "bettin
                     as_ = s.outcome.outcome_metadata.get("away_score")
                     score = f" {as_}-{hs}" if hs is not None and as_ is not None else ""
                     lines.append(f"{j}. {icon} {label}")
-                    lines.append(f"   {word}{score}")
+                    lines.append(f"   {word}{score}{ev_stars}")
             lines.append("")
 
     # --- Section 1: today's picks ---
