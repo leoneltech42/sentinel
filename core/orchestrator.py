@@ -278,6 +278,8 @@ def run_resolution(session: Session, adapter: Adapter) -> int:
             )
         )
         if outcome is None:
+            logging.info("resolution pending  signal=%s  pick=%s  valid_for=%s  (no result yet)",
+                         sig.id, sig.features.get("pick", "?"), sig.valid_for_date)
             continue
 
         # Defensive guard: skip if this signal already has an outcome row.
@@ -287,10 +289,13 @@ def run_resolution(session: Session, adapter: Adapter) -> int:
             select(SignalOutcome).where(SignalOutcome.signal_id == sig.id)
         )
         if existing_outcome:
+            logging.info("resolution skipped  signal=%s  (already has outcome row)", sig.id)
             continue
 
         if outcome.metadata.get("void"):
             # Match didn't finish (postponed/suspended/cancelled) — no outcome row.
+            logging.info("resolution void  signal=%s  pick=%s  valid_for=%s",
+                         sig.id, sig.features.get("pick", "?"), sig.valid_for_date)
             sig.status = "void"
             resolved += 1
             continue

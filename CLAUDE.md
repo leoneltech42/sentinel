@@ -221,6 +221,14 @@ Intentionally deferred — do not implement without discussion:
   level (not by removing it from `ALL_SPORT_KEYS`). It never generated valid
   picks because `WORLD_CUP_RATINGS` is a placeholder. Can be re-enabled via
   `domains.config` jsonb when a real ratings feed is available.
+- **Void signals have no `signal_outcomes` row by design** — `run_resolution()`
+  skips void signals without inserting an outcome. `_verify_outcomes_supabase()`
+  uses a separate `_fetch_void()` query to surface them as `[void]` in terminal
+  output. Do not add outcome rows for void signals.
+- **Telegram message hard limit is 4096 chars (HTML mode)** — 
+  `_send_results_notification()` uses a 1-day backfill window (yesterday only)
+  to stay well under the limit. `TelegramChannel._broadcast()` auto-splits any
+  message exceeding 3800 chars on newline boundaries as a safety net.
 
 ## Conventions
 

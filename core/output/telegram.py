@@ -339,16 +339,52 @@ class TelegramChannel:
 
     # -- internals ---------------------------------------------------------- #
 
+    _MSG_LIMIT = 4096
+    _MSG_SPLIT_AT = 3800  # safe margin below the hard limit
+
+    @staticmethod
+    def _split_message(text: str, limit: int = _MSG_SPLIT_AT) -> list[str]:
+        """Split an HTML message on newline boundaries so each part fits in limit chars."""
+        if len(text) <= limit:
+            return [text]
+        parts: list[str] = []
+        current_lines: list[str] = []
+        current_len = 0
+        for line in text.split("\n"):
+            # +1 for the newline that join() will add between lines
+            needed = len(line) + (1 if current_lines else 0)
+            if current_lines and current_len + needed > limit:
+                parts.append("\n".join(current_lines))
+                current_lines = [line]
+                current_len = len(line)
+            else:
+                current_lines.append(line)
+                current_len += needed
+        if current_lines:
+            parts.append("\n".join(current_lines))
+        return parts
+
     def _broadcast(self, text: str) -> None:
         """Attempt delivery to every chat_id.
 
-        Per-ID failures are logged as warnings and skipped so one bad chat
-        does not block the rest. Raises RuntimeError if *all* IDs fail.
+        Long messages are split on newline boundaries to stay under the
+        4096-char Telegram limit. Per-ID failures are logged and skipped;
+        raises RuntimeError only if *all* IDs fail.
         """
+        msg_len = len(text)
+        parts = self._split_message(text)
+        if len(parts) > 1:
+            logging.info(
+                "Telegram message split into %d parts (%d chars total)", len(parts), msg_len
+            )
+        else:
+            logging.info("Telegram message length: %d chars", msg_len)
+
         failed = 0
         for chat_id in self._chat_ids:
             try:
-                self._send(chat_id, text)
+                for part in parts:
+                    self._send(chat_id, part)
             except Exception as exc:
                 logging.warning(
                     "Telegram send failed for chat_id %s: %s", chat_id, exc

@@ -378,12 +378,15 @@ def _verify_outcomes_supabase(session, target_date: date) -> None:
 
     Two sections:
       1. Results for target_date  — signals whose valid_for_date == target_date.
-      2. Backfilled from previous days — signals from the 7 days prior that were
-         resolved in the same run (shown only when any exist).
+         Includes resolved (outcome row) and void (no outcome row) picks.
+      2. Historical backfill — resolved/void signals from the 7 days prior,
+         shown only when any exist. These were resolved on previous runs;
+         the label is "Historical outcomes" to avoid implying they were
+         created in the current run.
     """
     from core.models import Domain
 
-    def _fetch(date_clause) -> list:
+    def _fetch_outcomes(date_clause) -> list:
         return session.scalars(
             select(SignalOutcome)
             .join(Signal, SignalOutcome.signal_id == Signal.id)
@@ -392,11 +395,21 @@ def _verify_outcomes_supabase(session, target_date: date) -> None:
             .options(selectinload(SignalOutcome.signal))
         ).all()
 
-    def _print_section(rows: list, header: str) -> None:
-        total   = len(rows)
-        correct = sum(1 for r in rows if r.was_correct)
+    def _fetch_void(date_clause) -> list:
+        return session.scalars(
+            select(Signal)
+            .join(Domain, Signal.domain_id == Domain.id)
+            .where(date_clause, Signal.status == "void", Domain.slug == "betting")
+        ).all()
+
+    def _print_section(rows: list, void_sigs: list, header: str,
+                       created_today: bool = False) -> None:
+        total      = len(rows)
+        n_void     = len(void_sigs)
+        correct    = sum(1 for r in rows if r.was_correct)
+        label_tag  = "created" if created_today else "on record"
         print(f"  --- {header} ---")
-        print(f"  Outcome rows created : {total}")
+        print(f"  Resolved {label_tag}   : {total}  ({n_void} void)")
         if total:
             print(f"  Correct              : {correct}/{total}  "
                   f"({correct/total:.0%} win rate)")
@@ -408,32 +421,46 @@ def _verify_outcomes_supabase(session, target_date: date) -> None:
             else:
                 print("  CLV                  : not available "
                       "(historical endpoint not on free tier)")
-            print()
-            for r in rows:
-                f      = r.signal.features
-                icon   = "[W]" if r.was_correct else "[L]"
-                hs     = r.outcome_metadata.get("home_score", "?")
-                as_    = r.outcome_metadata.get("away_score", "?")
-                winner = r.outcome_metadata.get("winner", "?")
-                ev_str = f"{r.signal.expected_value:+.1%}"
-                stars  = _confidence_stars(r.signal.confidence)
-                date_tag = (f"  [{r.signal.valid_for_date}]"
-                            if r.signal.valid_for_date != target_date else "")
-                print(f"  {icon}  {f.get('match','?'):<42}  "
-                      f"pick={f.get('pick','?'):<30}  "
-                      f"score={as_}-{hs}  winner={winner}  "
-                      f"EV {ev_str}  {stars}{date_tag}")
         print()
+        for r in rows:
+            f      = r.signal.features
+            icon   = "[W]" if r.was_correct else "[L]"
+            hs     = r.outcome_metadata.get("home_score", "?")
+            as_    = r.outcome_metadata.get("away_score", "?")
+            winner = r.outcome_metadata.get("winner", "?")
+            ev_str = f"{r.signal.expected_value:+.1%}"
+            stars  = _confidence_stars(r.signal.confidence)
+            date_tag = (f"  [{r.signal.valid_for_date}]"
+                        if r.signal.valid_for_date != target_date else "")
+            print(f"  {icon}  {f.get('match','?'):<42}  "
+                  f"pick={f.get('pick','?'):<30}  "
+                  f"score={as_}-{hs}  winner={winner}  "
+                  f"EV {ev_str}  {stars}{date_tag}")
+        for s in void_sigs:
+            f = s.features
+            date_tag = (f"  [{s.valid_for_date}]"
+                        if s.valid_for_date != target_date else "")
+            print(f"  [void]  {f.get('match','?'):<42}  "
+                  f"pick={f.get('pick','?'):<30}  (postponed/cancelled){date_tag}")
+        if rows or void_sigs:
+            print()
 
-    rows = _fetch(Signal.valid_for_date == target_date)
-    _print_section(rows, f"Supabase signal_outcomes for {target_date}")
+    today_rows = _fetch_outcomes(Signal.valid_for_date == target_date)
+    today_void = _fetch_void(Signal.valid_for_date == target_date)
+    _print_section(today_rows, today_void,
+                   f"Supabase signal_outcomes for {target_date}",
+                   created_today=True)
 
     cutoff = target_date - timedelta(days=7)
-    backfill = _fetch(
+    back_rows = _fetch_outcomes(
         (Signal.valid_for_date >= cutoff) & (Signal.valid_for_date < target_date)
     )
-    if backfill:
-        _print_section(backfill, "Backfilled from previous days")
+    back_void = _fetch_void(
+        (Signal.valid_for_date >= cutoff) & (Signal.valid_for_date < target_date)
+    )
+    if back_rows or back_void:
+        _print_section(back_rows, back_void, "Historical backfill (7-day window)",
+                       created_today=False)
 
 
 def _verify_supabase(session, today: date, domain: str) -> None:
@@ -487,13 +514,14 @@ def _send_picks_notification(signals: list[Signal], for_date: date, domain: str)
 
 def _send_results_notification(session, for_date: date, domain: str) -> None:
     from core.output import notify_results
-    # Include today's picks PLUS any backfill from the preceding 7 days.
-    # _format_results() partitions them into two sections by valid_for_date.
-    cutoff = for_date - timedelta(days=7)
+    # Today's picks + yesterday's backfill only.  Wider windows push the
+    # Telegram message past the 4096-char limit; the terminal display keeps
+    # the full 7-day window for investigation purposes.
+    yesterday = for_date - timedelta(days=1)
     signals = list(session.scalars(
         select(Signal)
         .where(
-            Signal.valid_for_date >= cutoff,
+            Signal.valid_for_date >= yesterday,
             Signal.valid_for_date <= for_date,
             Signal.status.in_(["resolved", "void"]),
         )
