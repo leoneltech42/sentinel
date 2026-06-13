@@ -1,0 +1,88 @@
+export interface PickResponse {
+  id: string;
+  event_key: string;
+  valid_for_date: string;
+  sport: string;
+  league: string;
+  pick: string;
+  matchup: string;
+  confidence: number;
+  ev: number;
+  odds: number;
+  stake_units: number;
+  justification: string | null;
+  followed: boolean;
+  outcome: "won" | "lost" | "void" | null;
+  score: string | null;
+}
+
+export interface OutcomeResponse {
+  signal_id: string;
+  valid_for_date: string;
+  sport: string;
+  league: string;
+  pick: string;
+  was_correct: boolean;
+  score: string;
+  ev: number;
+  confidence: number;
+}
+
+export interface PnlResponse {
+  picks: number;
+  wins: number;
+  win_rate: number;
+  kelly_roi: number;
+}
+
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+
+async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    ...options,
+    headers: {
+      "X-API-Key": API_KEY,
+      "Content-Type": "application/json",
+      ...(options.headers as Record<string, string>),
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`API ${res.status}: ${path}`);
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+export function getPicks(
+  date: string,
+  sport?: string,
+  league?: string
+): Promise<PickResponse[]> {
+  const p = new URLSearchParams({ date });
+  if (sport) p.set("sport", sport);
+  if (league) p.set("league", league);
+  return apiFetch(`/picks?${p}`);
+}
+
+export function getOutcomes(date: string): Promise<OutcomeResponse[]> {
+  return apiFetch(`/outcomes?date=${date}`);
+}
+
+export function followSignal(id: string, stake: number): Promise<PickResponse> {
+  return apiFetch(`/signals/${id}/follow`, {
+    method: "POST",
+    body: JSON.stringify({ stake }),
+  });
+}
+
+export function unfollowSignal(id: string): Promise<void> {
+  return apiFetch(`/signals/${id}/follow`, { method: "DELETE" });
+}
+
+export function getGlobalPnl(): Promise<PnlResponse> {
+  return apiFetch("/pnl/global");
+}
+
+export function getPersonalPnl(): Promise<PnlResponse> {
+  return apiFetch("/pnl/personal");
+}

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from api.auth import require_api_key
 from api.dependencies import get_db, get_user_id
 from api.schemas import PickResponse
-from core.models import Domain, RawEvent, Signal, UserSignalView
+from core.models import Domain, RawEvent, Signal, SignalOutcome, UserSignalView
 
 router = APIRouter(tags=["picks"], dependencies=[Depends(require_api_key)])
 
@@ -33,6 +33,7 @@ def _build_pick(
     signal: Signal,
     event_key: str,
     followed: bool,
+    score: str | None = None,
 ) -> PickResponse:
     f = signal.features
     sport_key = f.get("sport", "_")
@@ -44,6 +45,7 @@ def _build_pick(
         sport=sport,
         league=league,
         pick=f.get("pick", ""),
+        matchup=f.get("match", ""),
         confidence=signal.confidence,
         ev=signal.expected_value,
         odds=float(f.get("best_odd", 0)),
@@ -51,6 +53,7 @@ def _build_pick(
         justification=f.get("justification"),
         followed=followed,
         outcome=_outcome_label(signal),
+        score=score,
     )
 
 
@@ -93,6 +96,7 @@ def get_picks(
             raw_events[row.id] = row.event_key
 
     followed_ids: set[uuid.UUID] = set()
+    outcome_scores: dict[uuid.UUID, str] = {}
     if signals:
         sig_ids = [s.id for s in signals]
         for view in session.scalars(
@@ -103,8 +107,20 @@ def get_picks(
             )
         ).all():
             followed_ids.add(view.signal_id)
+        for outcome in session.scalars(
+            select(SignalOutcome).where(SignalOutcome.signal_id.in_(sig_ids))
+        ).all():
+            meta = outcome.outcome_metadata or {}
+            hs = meta.get("home_score", "?")
+            as_ = meta.get("away_score", "?")
+            outcome_scores[outcome.signal_id] = f"{as_}-{hs}"
 
     return [
-        _build_pick(s, raw_events.get(s.raw_event_id, ""), s.id in followed_ids)
+        _build_pick(
+            s,
+            raw_events.get(s.raw_event_id, ""),
+            s.id in followed_ids,
+            outcome_scores.get(s.id),
+        )
         for s in signals
     ]

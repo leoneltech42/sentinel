@@ -13,6 +13,7 @@ class PickResponse(BaseModel):
     sport: str           # derived: features['sport'].split('_')[0]
     league: str          # derived: features['sport'].split('_', 1)[1]
     pick: str            # features['pick']
+    matchup: str         # features['match']
     confidence: float
     ev: float            # Signal.expected_value
     odds: float          # features['best_odd']
@@ -20,6 +21,7 @@ class PickResponse(BaseModel):
     justification: str | None
     followed: bool
     outcome: str | None  # 'won' | 'lost' | 'void' | None
+    score: str | None    # "{away_score}-{home_score}" from outcome_metadata
 
 
 class FollowRequest(BaseModel):
