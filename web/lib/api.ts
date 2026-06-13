@@ -22,10 +22,15 @@ export interface OutcomeResponse {
   sport: string;
   league: string;
   pick: string;
+  matchup: string;
   was_correct: boolean;
   score: string;
   ev: number;
   confidence: number;
+  odds: number;
+  stake_units: number;
+  followed: boolean;
+  personal_stake: number | null;
 }
 
 export interface PnlResponse {
@@ -64,8 +69,11 @@ export function getPicks(
   return apiFetch(`/picks?${p}`);
 }
 
-export function getOutcomes(date: string): Promise<OutcomeResponse[]> {
-  return apiFetch(`/outcomes?date=${date}`);
+export function getOutcomes(date?: string): Promise<OutcomeResponse[]> {
+  const p = new URLSearchParams();
+  if (date) p.set("date", date);
+  const qs = p.toString();
+  return apiFetch(`/outcomes${qs ? `?${qs}` : ""}`);
 }
 
 export function followSignal(id: string, stake: number): Promise<PickResponse> {

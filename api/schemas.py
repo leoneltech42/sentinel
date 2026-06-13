@@ -34,10 +34,15 @@ class OutcomeResponse(BaseModel):
     sport: str
     league: str
     pick: str
+    matchup: str         # features['match']
     was_correct: bool
     score: str           # "{away_score}-{home_score}" from outcome_metadata
     ev: float
     confidence: float
+    odds: float          # features['best_odd']
+    stake_units: float   # features['kelly_units']
+    followed: bool
+    personal_stake: float | None  # user_signal_views.stake if followed
 
 
 class PnlResponse(BaseModel):
