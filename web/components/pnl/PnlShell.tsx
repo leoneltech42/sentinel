@@ -1,47 +1,81 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { OutcomeResponse, PnlResponse } from "@/lib/api";
-import { getOutcomes } from "@/lib/api";
+import { getGlobalPnl, getOutcomes, getPersonalPnl } from "@/lib/api";
+import { confidenceToStars } from "@/lib/utils";
 import MetricCards from "./MetricCards";
+import FilteredMetrics from "./FilteredMetrics";
 import PnlChart, { type ChartPoint } from "./PnlChart";
 import FilterBar, { type Filters } from "./FilterBar";
 import OutcomesTable from "./OutcomesTable";
 
 type Mode = "global" | "personal";
 
-function confidenceToStars(c: number): number {
-  if (c >= 0.8) return 5;
-  if (c >= 0.7) return 4;
-  if (c >= 0.6) return 3;
-  if (c >= 0.5) return 2;
-  return 1;
-}
+const DEFAULT_VERSION = "poisson_v0.3.0";
 
 export default function PnlShell({
-  globalPnl,
-  personalPnl,
+  globalPnl: initialGlobalPnl,
+  personalPnl: initialPersonalPnl,
 }: {
   globalPnl: PnlResponse | null;
   personalPnl: PnlResponse | null;
 }) {
   const [mode, setMode] = useState<Mode>("global");
   const [outcomes, setOutcomes] = useState<OutcomeResponse[]>([]);
+  const [allVersionOutcomes, setAllVersionOutcomes] = useState<OutcomeResponse[]>([]);
   const [loading, setLoading] = useState(true);
+  const [modelVersion, setModelVersion] = useState(DEFAULT_VERSION);
+  const [globalPnl, setGlobalPnl] = useState<PnlResponse | null>(initialGlobalPnl);
+  const [personalPnl, setPersonalPnl] = useState<PnlResponse | null>(initialPersonalPnl);
   const [filters, setFilters] = useState<Filters>({
     dateFrom: "",
     dateTo: "",
     sport: "",
     league: "",
-    minStars: 1,
   });
+  const [selectedStars, setSelectedStars] = useState<number[]>([1, 2, 3, 4, 5]);
 
+  // Mount: fetch all-versions (for dropdown) + default-version outcomes in parallel
   useEffect(() => {
-    getOutcomes()
-      .then(setOutcomes)
-      .catch(() => setOutcomes([]))
-      .finally(() => setLoading(false));
+    setLoading(true);
+    Promise.all([
+      getOutcomes(undefined, "all").catch(() => [] as OutcomeResponse[]),
+      getOutcomes(undefined, DEFAULT_VERSION).catch(() => [] as OutcomeResponse[]),
+    ]).then(([allRows, defaultRows]) => {
+      setAllVersionOutcomes(allRows);
+      setOutcomes(defaultRows);
+      setLoading(false);
+    });
   }, []);
+
+  // Model version change: re-fetch outcomes + metric cards (skip on first render)
+  const isFirstVersionChange = useRef(true);
+  useEffect(() => {
+    if (isFirstVersionChange.current) {
+      isFirstVersionChange.current = false;
+      return;
+    }
+    setLoading(true);
+    Promise.all([
+      getOutcomes(undefined, modelVersion).catch(() => [] as OutcomeResponse[]),
+      getGlobalPnl(modelVersion).catch(() => null),
+      getPersonalPnl(modelVersion).catch(() => null),
+    ]).then(([newOutcomes, newGlobal, newPersonal]) => {
+      setOutcomes(newOutcomes);
+      setGlobalPnl(newGlobal);
+      setPersonalPnl(newPersonal);
+      setLoading(false);
+    });
+  }, [modelVersion]);
+
+  // Derive available model versions from the all-versions fetch (sorted desc)
+  const modelVersions = useMemo(() => {
+    const versions = [
+      ...new Set(allVersionOutcomes.map((o) => o.model_version).filter(Boolean)),
+    ];
+    return versions.sort().reverse();
+  }, [allVersionOutcomes]);
 
   const sports = useMemo(
     () => [...new Set(outcomes.map((o) => o.sport).filter(Boolean))].sort(),
@@ -53,8 +87,14 @@ export default function PnlShell({
     [outcomes]
   );
 
-  function handleFilterChange(key: keyof Filters, value: string | number) {
+  function handleFilterChange(key: keyof Filters, value: string) {
     setFilters((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function handleResetFilters() {
+    setFilters({ dateFrom: "", dateTo: "", sport: "", league: "" });
+    setSelectedStars([1, 2, 3, 4, 5]);
+    setModelVersion(DEFAULT_VERSION);
   }
 
   const filtered = useMemo(() => {
@@ -63,11 +103,11 @@ export default function PnlShell({
       if (filters.dateTo && o.valid_for_date > filters.dateTo) return false;
       if (filters.sport && o.sport !== filters.sport) return false;
       if (filters.league && o.league !== filters.league) return false;
-      if (confidenceToStars(o.confidence) < filters.minStars) return false;
+      if (!selectedStars.includes(confidenceToStars(o.confidence))) return false;
       if (mode === "personal" && !o.followed) return false;
       return true;
     });
-  }, [outcomes, filters, mode]);
+  }, [outcomes, filters, selectedStars, mode]);
 
   const chartData = useMemo((): ChartPoint[] => {
     let cumulative = 0;
@@ -99,6 +139,8 @@ export default function PnlShell({
         onSelect={setMode}
       />
 
+      <FilteredMetrics outcomes={filtered} mode={mode} />
+
       {loading ? (
         <div
           style={{
@@ -125,6 +167,12 @@ export default function PnlShell({
         sports={sports}
         leagues={leagues}
         onChange={handleFilterChange}
+        modelVersion={modelVersion}
+        modelVersions={modelVersions}
+        onModelVersionChange={setModelVersion}
+        selectedStars={selectedStars}
+        onStarsChange={setSelectedStars}
+        onResetFilters={handleResetFilters}
       />
 
       {loading ? (

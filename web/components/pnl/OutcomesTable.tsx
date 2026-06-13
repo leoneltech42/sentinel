@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { OutcomeResponse } from "@/lib/api";
+import { confidenceToStars, renderStars } from "@/lib/utils";
 
 type Mode = "global" | "personal";
 
@@ -15,27 +16,6 @@ type SortKey =
   | "stake_units"
   | "was_correct"
   | "pnl";
-
-function confidenceToStars(c: number): number {
-  if (c >= 0.8) return 5;
-  if (c >= 0.7) return 4;
-  if (c >= 0.6) return 3;
-  if (c >= 0.5) return 2;
-  return 1;
-}
-
-function Stars({ confidence }: { confidence: number }) {
-  const filled = confidenceToStars(confidence);
-  return (
-    <span style={{ letterSpacing: 1, fontSize: 12 }}>
-      {[1, 2, 3, 4, 5].map((i) => (
-        <span key={i} style={{ color: i <= filled ? "#1D9E75" : "var(--color-text-secondary)" }}>
-          ★
-        </span>
-      ))}
-    </span>
-  );
-}
 
 function computePnl(row: OutcomeResponse, mode: Mode): number | null {
   const stake = mode === "personal" ? row.personal_stake : row.stake_units;
@@ -182,8 +162,8 @@ export default function OutcomesTable({
                   {row.ev >= 0 ? "+" : ""}
                   {(row.ev * 100).toFixed(1)}%
                 </td>
-                <td style={tdStyle}>
-                  <Stars confidence={row.confidence} />
+                <td style={{ ...tdStyle, fontSize: 12 }}>
+                  {renderStars(confidenceToStars(row.confidence))}
                 </td>
                 <td style={{ ...tdStyle, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                   {stake != null ? `${stake.toFixed(1)}u` : <span style={{ color: "var(--color-text-secondary)" }}>—</span>}

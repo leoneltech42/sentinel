@@ -3,31 +3,7 @@
 import { useState } from "react";
 import type { PickResponse } from "@/lib/api";
 import FollowModal from "@/components/FollowModal";
-
-function Stars({ confidence }: { confidence: number }) {
-  const count =
-    confidence >= 0.9
-      ? 5
-      : confidence >= 0.8
-        ? 4
-        : confidence >= 0.7
-          ? 3
-          : confidence >= 0.6
-            ? 2
-            : 1;
-  return (
-    <span style={{ fontSize: 13, letterSpacing: 1 }}>
-      {[1, 2, 3, 4, 5].map((i) => (
-        <span
-          key={i}
-          style={{ color: i <= count ? "#1D9E75" : "var(--color-text-secondary)" }}
-        >
-          ★
-        </span>
-      ))}
-    </span>
-  );
-}
+import { confidenceToStars, renderStars } from "@/lib/utils";
 
 function OutcomeBadge({ outcome }: { outcome: PickResponse["outcome"] }) {
   if (!outcome) return null;
@@ -173,7 +149,7 @@ export default function PickCard({
                 Pending
               </span>
             )}
-            <Stars confidence={pick.confidence} />
+            <span style={{ fontSize: 13 }}>{renderStars(confidenceToStars(pick.confidence))}</span>
           </div>
         </div>
 

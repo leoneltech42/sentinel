@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session, selectinload
 from api.auth import require_api_key
 from api.dependencies import get_db, get_user_id
 from api.schemas import PnlResponse
-from core.models import Domain, Signal, SignalOutcome, UserSignalView
+from core.models import Domain, ModelRun, Signal, SignalOutcome, UserSignalView
 
 router = APIRouter(prefix="/pnl", tags=["pnl"], dependencies=[Depends(require_api_key)])
+
+_DEFAULT_VERSION = "poisson_v0.3.0"
 
 
 def _compute_pnl(rows: list[SignalOutcome], stakes: dict[uuid.UUID, float]) -> PnlResponse:
@@ -43,18 +45,23 @@ def _compute_pnl(rows: list[SignalOutcome], stakes: dict[uuid.UUID, float]) -> P
     )
 
 
-def _global_outcomes(session: Session) -> list[SignalOutcome]:
-    return session.scalars(
+def _global_outcomes(session: Session, model_version: str) -> list[SignalOutcome]:
+    q = (
         select(SignalOutcome)
         .join(Signal, SignalOutcome.signal_id == Signal.id)
         .join(Domain, Signal.domain_id == Domain.id)
         .where(Domain.slug == "betting")
         .options(selectinload(SignalOutcome.signal))
-    ).all()
+    )
+    if model_version != "all":
+        q = q.join(ModelRun, Signal.model_run_id == ModelRun.id).where(
+            ModelRun.model_version == model_version
+        )
+    return list(session.scalars(q).all())
 
 
 def _personal_outcomes(
-    session: Session, user_id: uuid.UUID
+    session: Session, user_id: uuid.UUID, model_version: str
 ) -> tuple[list[SignalOutcome], dict[uuid.UUID, float]]:
     views = session.scalars(
         select(UserSignalView).where(
@@ -68,7 +75,7 @@ def _personal_outcomes(
     if not followed_ids:
         return [], {}
 
-    outcomes = session.scalars(
+    q = (
         select(SignalOutcome)
         .join(Signal, SignalOutcome.signal_id == Signal.id)
         .join(Domain, Signal.domain_id == Domain.id)
@@ -77,21 +84,29 @@ def _personal_outcomes(
             SignalOutcome.signal_id.in_(followed_ids),
         )
         .options(selectinload(SignalOutcome.signal))
-    ).all()
-    return list(outcomes), stakes
+    )
+    if model_version != "all":
+        q = q.join(ModelRun, Signal.model_run_id == ModelRun.id).where(
+            ModelRun.model_version == model_version
+        )
+    return list(session.scalars(q).all()), stakes
 
 
 @router.get("/global", response_model=PnlResponse)
-def pnl_global(session: Session = Depends(get_db)) -> PnlResponse:
-    rows = _global_outcomes(session)
+def pnl_global(
+    model_version: str = _DEFAULT_VERSION,
+    session: Session = Depends(get_db),
+) -> PnlResponse:
+    rows = _global_outcomes(session, model_version)
     stakes = {r.signal_id: float(r.signal.features.get("kelly_units", 1.0)) for r in rows}
     return _compute_pnl(rows, stakes)
 
 
 @router.get("/personal", response_model=PnlResponse)
 def pnl_personal(
+    model_version: str = _DEFAULT_VERSION,
     session: Session = Depends(get_db),
     user_id: uuid.UUID = Depends(get_user_id),
 ) -> PnlResponse:
-    rows, stakes = _personal_outcomes(session, user_id)
+    rows, stakes = _personal_outcomes(session, user_id, model_version)
     return _compute_pnl(rows, stakes)

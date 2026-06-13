@@ -12,9 +12,11 @@ from api.auth import require_api_key
 from api.dependencies import get_db, get_user_id
 from api.routers.picks import _derive_sport_league
 from api.schemas import OutcomeResponse
-from core.models import Domain, Signal, SignalOutcome, UserSignalView
+from core.models import Domain, ModelRun, Signal, SignalOutcome, UserSignalView
 
 router = APIRouter(tags=["outcomes"], dependencies=[Depends(require_api_key)])
+
+_DEFAULT_VERSION = "poisson_v0.3.0"
 
 
 @router.get("/outcomes", response_model=list[OutcomeResponse])
@@ -22,6 +24,7 @@ def get_outcomes(
     target_date: Annotated[date | None, Query(alias="date")] = None,
     sport: str | None = None,
     league: str | None = None,
+    model_version: str = _DEFAULT_VERSION,
     session: Session = Depends(get_db),
     user_id: uuid.UUID = Depends(get_user_id),
 ) -> list[OutcomeResponse]:
@@ -32,6 +35,7 @@ def get_outcomes(
         .where(Domain.slug == "betting")
         .options(selectinload(SignalOutcome.signal))
     )
+
     if target_date is not None:
         q = q.where(Signal.valid_for_date == target_date).order_by(
             Signal.expected_value.desc()
@@ -44,9 +48,27 @@ def get_outcomes(
     if league:
         q = q.where(Signal.features["sport"].as_string().like(f"%_{league}"))
 
+    if model_version != "all":
+        q = (
+            q.join(ModelRun, Signal.model_run_id == ModelRun.id)
+            .where(ModelRun.model_version == model_version)
+        )
+
     rows = list(session.scalars(q).all())
 
     sig_ids = [r.signal_id for r in rows]
+
+    # Bulk-fetch model_version for all returned signals (single query)
+    model_version_map: dict[uuid.UUID, str] = {}
+    if sig_ids:
+        for sig_id, mv in session.execute(
+            select(Signal.id, ModelRun.model_version)
+            .join(ModelRun, Signal.model_run_id == ModelRun.id)
+            .where(Signal.id.in_(sig_ids))
+        ).all():
+            model_version_map[sig_id] = mv
+
+    # Bulk-fetch UserSignalViews for followed/personal_stake
     views: dict[uuid.UUID, UserSignalView] = {}
     if sig_ids:
         for v in session.scalars(
@@ -86,6 +108,7 @@ def get_outcomes(
                     if view and view.followed and view.stake is not None
                     else None
                 ),
+                model_version=model_version_map.get(row.signal_id, ""),
             )
         )
     return results

@@ -31,6 +31,7 @@ export interface OutcomeResponse {
   stake_units: number;
   followed: boolean;
   personal_stake: number | null;
+  model_version: string;
 }
 
 export interface PnlResponse {
@@ -69,9 +70,13 @@ export function getPicks(
   return apiFetch(`/picks?${p}`);
 }
 
-export function getOutcomes(date?: string): Promise<OutcomeResponse[]> {
+export function getOutcomes(
+  date?: string,
+  modelVersion?: string
+): Promise<OutcomeResponse[]> {
   const p = new URLSearchParams();
   if (date) p.set("date", date);
+  if (modelVersion) p.set("model_version", modelVersion);
   const qs = p.toString();
   return apiFetch(`/outcomes${qs ? `?${qs}` : ""}`);
 }
@@ -87,10 +92,16 @@ export function unfollowSignal(id: string): Promise<void> {
   return apiFetch(`/signals/${id}/follow`, { method: "DELETE" });
 }
 
-export function getGlobalPnl(): Promise<PnlResponse> {
-  return apiFetch("/pnl/global");
+export function getGlobalPnl(modelVersion?: string): Promise<PnlResponse> {
+  const p = new URLSearchParams();
+  if (modelVersion) p.set("model_version", modelVersion);
+  const qs = p.toString();
+  return apiFetch(`/pnl/global${qs ? `?${qs}` : ""}`);
 }
 
-export function getPersonalPnl(): Promise<PnlResponse> {
-  return apiFetch("/pnl/personal");
+export function getPersonalPnl(modelVersion?: string): Promise<PnlResponse> {
+  const p = new URLSearchParams();
+  if (modelVersion) p.set("model_version", modelVersion);
+  const qs = p.toString();
+  return apiFetch(`/pnl/personal${qs ? `?${qs}` : ""}`);
 }

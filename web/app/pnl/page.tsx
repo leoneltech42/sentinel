@@ -3,8 +3,8 @@ import PnlShell from "@/components/pnl/PnlShell";
 
 export default async function PnlPage() {
   const [globalPnl, personalPnl] = await Promise.allSettled([
-    getGlobalPnl(),
-    getPersonalPnl(),
+    getGlobalPnl("poisson_v0.3.0"),
+    getPersonalPnl("poisson_v0.3.0"),
   ]);
 
   return (

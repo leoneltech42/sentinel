@@ -43,6 +43,7 @@ class OutcomeResponse(BaseModel):
     stake_units: float   # features['kelly_units']
     followed: bool
     personal_stake: float | None  # user_signal_views.stake if followed
+    model_version: str
 
 
 class PnlResponse(BaseModel):
