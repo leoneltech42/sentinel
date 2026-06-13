@@ -267,30 +267,70 @@ Intentionally deferred — do not implement without discussion:
 - `python -m scripts.track pnl --version v0.X.X` — personal P&L filtered to
   a specific model version. Default for both commands is `poisson_v0.3.0`.
 
-## Phase 0 remaining work
+## Phase 1 scope
 
-**Gate to Phase 1:** 30+ poisson_v0.3.0 resolved picks, win rate > 53%.
-Currently at 0 resolved v0.3.0 picks. Running daily from 2026-06-08.
+Goal: personal dashboard to track daily picks, follow/unfollow signals, and
+view P&L — global and per followed picks. Signal distribution handled
+externally (Dubclub or equivalent). No multi-user, no billing layer.
 
-Decision tree at 30 v0.3.0 picks:
-- Win rate **> 53%** → start Phase 1
-- Win rate **45–53%** → evaluate — may proceed with caution or tune further
-- Win rate **< 45%** → investigate systematic model issue before Phase 1
+**FastAPI (api/)**
+- Authentication: X-API-Key header validated against SENTINEL_API_KEY env var.
+  Return 401 on missing or invalid key.
+- Endpoints:
+  - GET  /picks?date=YYYY-MM-DD&sport=baseball&league=mlb
+  - GET  /outcomes?date=YYYY-MM-DD&sport=baseball&league=mlb
+  - POST /signals/{id}/follow    — body: {"stake": float | null}
+                                   if null, defaults to features['stake_units']
+  - DELETE /signals/{id}/follow
+  - GET  /pnl/global             — all resolved picks for SENTINEL_USER_ID
+  - GET  /pnl/personal           — followed picks only
+- sport and league are independent optional filters. ?sport=baseball returns
+  all baseball leagues. ?league=mlb returns MLB only. Both together are
+  equivalent to ?league=mlb.
+- sport/league are derived at read time by splitting features['sport'] on
+  the first underscore: "baseball_mlb" → sport="baseball", league="mlb".
+  No schema change — existing picks are untouched.
+- SENTINEL_USER_ID env var identifies the single user (Phase 0 shortcut
+  retained for Phase 1).
+- Alembic migrations replace ALTER TABLE fallback in core/db.py.
 
-Next model improvement (consider at 50+ v0.3.0 picks, if still miscalibrated):
-- Recency weighting already implemented (70/30 blend in `MLBStatsProvider`)
-- If still underperforming: consider negative binomial distribution (handles
-  overdispersion better than Poisson for baseball) or additional features
-  (bullpen ERA, park factors, rest days)
+**Betting adapter restructure (adapters/betting/)**
+- Current monolithic BettingAdapter splits into per-league sub-adapters.
+- Shared logic (de-vig, EV, Kelly sizing, signal schema) moves to
+  base_betting.py. Per-league logic (ingesta, model, resolution, stats
+  API client) lives in its own subdirectory.
+- A registry maps league slug → adapter class so new leagues are added
+  by creating a folder and registering, without touching existing code.
+- domains.config jsonb stores active leagues and per-league config params
+  (API keys, thresholds). The registry reads this at runtime.
+- This restructure is scaffolded in Phase 1 but MLB logic is not moved
+  yet — migration happens as a separate task after scaffold is confirmed.
 
-Phase 1 will include:
-- FastAPI service (`api/` scaffold already exists)
-- Railway deployment (Python service + Telegram webhook)
-- Next.js web app (auth, dashboard, Stripe billing)
-- Alembic migrations replacing `ALTER TABLE` fallback
-- `users` table expansion (`telegram_chat_id`, `stripe_customer_id`,
-  preferences, timezone)
-- Multi-user tracking replacing `SENTINEL_USER_ID` shortcut
+Target structure:
+  adapters/betting/
+  ├── base_betting.py      — shared: de-vig, EV, Kelly, SignalData schema
+  ├── registry.py          — maps league slug → adapter class; reads
+                             domains.config to determine active leagues
+  ├── mlb/
+  │   ├── adapter.py       — ingesta + model + resolution (current MLB logic)
+  │   ├── stats.py         — MLB Stats API client
+  │   └── model.py         — Poisson v0.3.0
+  └── __init__.py          — exports BettingAdapter (facade over registry)
+
+**Next.js 15 (web/)**
+- HTTP Basic Auth via middleware on all routes. Credentials from
+  DASHBOARD_USER and DASHBOARD_PASSWORD env vars.
+- Views:
+  - /             — today's picks: EV, confidence stars, sizing, follow toggle
+  - /date/[date]  — same for a past date
+  - /pnl          — global P&L and personal P&L side by side
+- Hosted on Vercel. Never touches Postgres directly — all data via FastAPI.
+
+**Infra**
+- FastAPI on Railway. Next.js on Vercel.
+- New env vars: SENTINEL_API_KEY, DASHBOARD_USER, DASHBOARD_PASSWORD.
+- Add all three to .env.example at repo root.
+- Existing GitHub Actions workflows unchanged.
 
 ## What to ask before doing
 
