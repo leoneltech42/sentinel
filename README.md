@@ -5,7 +5,7 @@
 > and expected value. Two adapters running in production: MLB value betting
 > and flight price monitoring.
 
-**Status:** 🟢 Live · Phase 0 (model validation) · v0.3.0
+**Status:** 🟢 Live · Phase 1 (dashboard) · v0.3.0
 
 ---
 
@@ -155,13 +155,16 @@ Groq API keys.
 
 ## Roadmap
 
-- [x] **Phase 0 — Model validation**
+- [x] **Phase 0 — Model validation** ✅ 2026-06-13
       Poisson model with pitcher ERA + recent form + tie redistribution.
       Daily picks via Telegram with Kelly sizing and AI justifications.
       Personal P&L tracking. Backtested on 419 MLB games (58.7% accuracy).
-- [ ] **Phase 1 — Public SaaS**
-      FastAPI REST layer, Next.js dashboard, Stripe freemium billing,
-      Telegram webhook for `/follow` and `/pnl` commands, Railway deployment.
+      Live paper trading result: 48 resolved picks, 62.5% win rate, +22.5% Kelly ROI.
+- [ ] **Phase 1 — Dashboard**
+      FastAPI REST layer, personal Next.js dashboard (picks by date, follow/unfollow,
+      P&L global and per followed picks). Basic auth (HTTP Basic on Next.js,
+      API Key on FastAPI). Hosted on Vercel + Railway. Signal distribution
+      via external platform (Dubclub or equivalent).
 - [ ] **Phase 2 — Scale**
       More sports, additional adapter domains (crypto signals, real estate),
       admin dashboard, ad campaign.

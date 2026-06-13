@@ -116,13 +116,14 @@ Built and working:
   be re-enabled via `domains.config` jsonb — it never generated valid picks
   because the static ratings map is a placeholder with no real stats feed.
 
-Live paper trading status (update as results come in):
+Live paper trading status:
 - Started: 2026-05-31
 - v0.1.0: 30 picks resolved (13W/17L, 43.3%) — HA=1.10 bias confirmed
 - v0.2.0: 28 picks resolved (10W/18L, 35.7%) — HA fixed but still underperforming
-- v0.3.0 started: 2026-06-08 (pitcher ERA, recent form, 50/50 tie split)
-- v0.3.0 picks resolved: 0 — running daily, gate at 30 resolved picks
-- Gate to Phase 1: 30+ v0.3.0 resolved picks, win rate > 53%
+- v0.3.0: 48 picks resolved (30W/18L, 62.5%) — gate passed 2026-06-13
+  Flat ROI: +23.1% · Kelly ROI: +22.5% · Total staked: 216.3u
+  By confidence: 50–60% → 66.7% (n=9) · 60–70% → 53.8% (n=13) · 70%+ → 65.4% (n=26)
+- ✅ Phase 0 gate cleared: 48 resolved picks (gate: 30), 62.5% win rate (gate: 53%)
 
 Intentionally deferred — do not implement without discussion:
 - **Soccer / World Cup model:** deferred; MLB has 162 games/season, faster
@@ -130,8 +131,8 @@ Intentionally deferred — do not implement without discussion:
 - **Telegram webhook / polling:** deferred to Phase 1 on Railway
 - **Alembic migrations:** using `ALTER TABLE` fallback in `core/db.py` for
   Phase 0; Alembic is Phase 1
-- **`users` table expansion:** `telegram_chat_id`, `stripe_customer_id`,
-  preferences — Phase 1
+- **`users` table expansion:** `telegram_chat_id`, preferences — Phase 1
+  (stripe_customer_id removed — billing handled by external platform)
 - **`/refresh` command for premium users:** Phase 1
 - **Bankroll / staking suggestions:** deferred
 - **Flights: additional routes beyond EZE→MAD** — configure via
