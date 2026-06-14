@@ -42,7 +42,7 @@ export interface PnlResponse {
 }
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
+const API_KEY = process.env.API_KEY ?? process.env.NEXT_PUBLIC_API_KEY ?? ''
 
 async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
