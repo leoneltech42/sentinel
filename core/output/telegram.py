@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 
 import requests
 
+from core.utils import confidence_star_level
+
 if TYPE_CHECKING:
     from core.models import Signal
 
@@ -124,17 +126,18 @@ def _format_picks_flights(signals: list[Signal], for_date: date) -> str:
     return "\n".join(lines)
 
 
+_HTML_STARS: dict[int, str] = {
+    5: "&#9733;&#9733;&#9733;&#9733;&#9733;",   # ★★★★★
+    4: "&#9733;&#9733;&#9733;&#9733;&#9734;",   # ★★★★☆
+    3: "&#9733;&#9733;&#9733;&#9734;&#9734;",   # ★★★☆☆
+    2: "&#9733;&#9733;&#9734;&#9734;&#9734;",   # ★★☆☆☆
+    1: "&#9733;&#9734;&#9734;&#9734;&#9734;",   # ★☆☆☆☆
+}
+
+
 def _confidence_stars(confidence: float) -> str:
-    """Map model confidence (0–1) to a 5-star display string."""
-    if confidence >= 0.90:
-        return "&#9733;&#9733;&#9733;&#9733;&#9733;"   # ★★★★★
-    if confidence >= 0.80:
-        return "&#9733;&#9733;&#9733;&#9733;&#9734;"   # ★★★★☆
-    if confidence >= 0.70:
-        return "&#9733;&#9733;&#9733;&#9734;&#9734;"   # ★★★☆☆
-    if confidence >= 0.60:
-        return "&#9733;&#9733;&#9734;&#9734;&#9734;"   # ★★☆☆☆
-    return "&#9733;&#9734;&#9734;&#9734;&#9734;"       # ★☆☆☆☆
+    """Map model confidence (0–1) to an HTML star string for Telegram."""
+    return _HTML_STARS[confidence_star_level(confidence)]
 
 
 def _format_results(signals: list[Signal], for_date: date, domain: str = "betting") -> str:

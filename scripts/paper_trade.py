@@ -45,6 +45,7 @@ from sqlalchemy.orm import selectinload
 from core.db import SessionLocal, configure_mock_db, init_db
 from core.models import Signal, SignalOutcome
 from core.orchestrator import run_pipeline, run_resolution
+from core.utils import confidence_star_level
 
 
 def main() -> None:
@@ -637,17 +638,18 @@ def _print_by_date(
 # Domain-specific renderers                                                    #
 # --------------------------------------------------------------------------- #
 
+_UNICODE_STARS: dict[int, str] = {
+    5: "★★★★★",
+    4: "★★★★☆",
+    3: "★★★☆☆",
+    2: "★★☆☆☆",
+    1: "★☆☆☆☆",
+}
+
+
 def _confidence_stars(confidence: float) -> str:
-    """Map model confidence (0–1) to a 5-star display string."""
-    if confidence >= 0.90:
-        return "★★★★★"
-    if confidence >= 0.80:
-        return "★★★★☆"
-    if confidence >= 0.70:
-        return "★★★☆☆"
-    if confidence >= 0.60:
-        return "★★☆☆☆"
-    return "★☆☆☆☆"
+    """Map model confidence (0–1) to a Unicode star string for terminal display."""
+    return _UNICODE_STARS[confidence_star_level(confidence)]
 
 
 def _render_betting(signals: list[Signal], label: date, *, show_outcomes: bool) -> None:
