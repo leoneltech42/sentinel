@@ -27,14 +27,15 @@ export default function FollowModal({
   const [loading, setLoading] = useState(false);
 
   const oddsLabel = `@ ${pick.odds.toFixed(2)}`;
+  const stakeNum = parseFloat(stake);
+  const stakeValid = !isNaN(stakeNum) && stakeNum > 0;
 
   const handleConfirm = async () => {
     setError(null);
     setLoading(true);
     try {
       if (mode === "follow") {
-        const stakeNum = parseFloat(stake);
-        const updated = await followSignal(pick.id, isNaN(stakeNum) ? pick.stake_units : stakeNum);
+        const updated = await followSignal(pick.id, stakeNum);
         onFollowed(updated);
       } else {
         await unfollowSignal(pick.id);
@@ -122,6 +123,11 @@ export default function FollowModal({
             >
               Suggested by model: {pick.stake_units.toFixed(1)}u · 1u = 1% bankroll
             </p>
+            {!stakeValid && (
+              <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--color-text-danger)" }}>
+                Enter a valid stake
+              </p>
+            )}
           </div>
         )}
 
@@ -163,7 +169,7 @@ export default function FollowModal({
           {mode === "follow" ? (
             <button
               onClick={handleConfirm}
-              disabled={loading}
+              disabled={loading || !stakeValid}
               style={{
                 padding: "7px 14px",
                 fontSize: 13,
@@ -172,8 +178,8 @@ export default function FollowModal({
                 background: "#1D9E75",
                 color: "white",
                 fontWeight: 500,
-                cursor: loading ? "default" : "pointer",
-                opacity: loading ? 0.7 : 1,
+                cursor: loading || !stakeValid ? "default" : "pointer",
+                opacity: loading || !stakeValid ? 0.5 : 1,
               }}
             >
               {loading ? "…" : "Confirm"}
