@@ -20,6 +20,7 @@ class PickResponse(BaseModel):
     stake_units: float   # features['kelly_units']
     justification: str | None
     followed: bool
+    status: str          # 'active' | 'expired' | 'resolved' | 'void'
     outcome: str | None  # 'won' | 'lost' | 'void' | None
     score: str | None    # "{away_score}-{home_score}" from outcome_metadata
 

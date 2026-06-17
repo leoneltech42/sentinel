@@ -52,6 +52,7 @@ def _build_pick(
         stake_units=float(f.get("kelly_units", 0)),
         justification=f.get("justification"),
         followed=followed,
+        status=signal.status,
         outcome=_outcome_label(signal),
         score=score,
     )
@@ -74,7 +75,7 @@ def get_picks(
         .where(
             Domain.slug == "betting",
             Signal.valid_for_date == target_date,
-            Signal.status.in_(["active", "resolved", "void"]),
+            Signal.status.in_(["active", "expired", "resolved", "void"]),
         )
         .options(selectinload(Signal.outcome))
         .order_by(Signal.expected_value.desc())

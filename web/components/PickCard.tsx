@@ -5,36 +5,52 @@ import type { PickResponse } from "@/lib/api";
 import FollowModal from "@/components/FollowModal";
 import { confidenceToStars, renderStars } from "@/lib/utils";
 
-function OutcomeBadge({ outcome }: { outcome: PickResponse["outcome"] }) {
-  if (!outcome) return null;
+function OutcomeBadge({
+  outcome,
+  status,
+}: {
+  outcome: PickResponse["outcome"];
+  status: PickResponse["status"];
+}) {
+  if (outcome === "won" || outcome === "lost" || outcome === "void") {
+    const map = {
+      won: { bg: "#EAF3DE", color: "#3B6D11", label: "Won" },
+      lost: { bg: "#FCEBEB", color: "#A32D2D", label: "Lost" },
+      void: { bg: "var(--color-background-secondary)", color: "var(--color-text-secondary)", label: "Void" },
+    } as const;
+    const s = map[outcome];
+    return (
+      <span style={{ fontSize: 11, fontWeight: 500, background: s.bg, color: s.color, borderRadius: 99, padding: "2px 8px", whiteSpace: "nowrap" }}>
+        {s.label}
+      </span>
+    );
+  }
 
-  const styles: Record<
-    NonNullable<PickResponse["outcome"]>,
-    { bg: string; color: string; label: string }
-  > = {
-    won: { bg: "#EAF3DE", color: "#3B6D11", label: "Won" },
-    lost: { bg: "#FCEBEB", color: "#A32D2D", label: "Lost" },
-    void: {
-      bg: "var(--color-background-secondary)",
-      color: "var(--color-text-secondary)",
-      label: "Void",
-    },
-  };
+  if (status === "expired") {
+    return (
+      <>
+        <style>{`@keyframes sentinel-pulse{0%,100%{opacity:1}50%{opacity:.5}}`}</style>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 500,
+            background: "var(--color-background-secondary)",
+            color: "var(--color-text-secondary)",
+            borderRadius: 99,
+            padding: "2px 8px",
+            whiteSpace: "nowrap",
+            animation: "sentinel-pulse 2s ease-in-out infinite",
+          }}
+        >
+          In progress
+        </span>
+      </>
+    );
+  }
 
-  const s = styles[outcome];
   return (
-    <span
-      style={{
-        fontSize: 11,
-        fontWeight: 500,
-        background: s.bg,
-        color: s.color,
-        borderRadius: 99,
-        padding: "2px 8px",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {s.label}
+    <span style={{ fontSize: 11, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", borderRadius: 99, padding: "2px 8px" }}>
+      Pending
     </span>
   );
 }
@@ -134,21 +150,7 @@ export default function PickCard({
               paddingTop: 2,
             }}
           >
-            {pick.outcome ? (
-              <OutcomeBadge outcome={pick.outcome} />
-            ) : (
-              <span
-                style={{
-                  fontSize: 11,
-                  background: "var(--color-background-secondary)",
-                  color: "var(--color-text-secondary)",
-                  borderRadius: 99,
-                  padding: "2px 8px",
-                }}
-              >
-                Pending
-              </span>
-            )}
+            <OutcomeBadge outcome={pick.outcome} status={pick.status} />
             <span style={{ fontSize: 13 }}>{renderStars(confidenceToStars(pick.confidence))}</span>
           </div>
         </div>

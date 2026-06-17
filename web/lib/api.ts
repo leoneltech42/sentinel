@@ -12,6 +12,7 @@ export interface PickResponse {
   stake_units: number;
   justification: string | null;
   followed: boolean;
+  status: "active" | "expired" | "resolved" | "void";
   outcome: "won" | "lost" | "void" | null;
   score: string | null;
 }
