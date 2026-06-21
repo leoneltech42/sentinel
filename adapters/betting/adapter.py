@@ -22,6 +22,7 @@ from adapters.base import (
     ResolvableSignal,
     SignalData,
 )
+from adapters.betting import calibration as C
 from adapters.betting import model as M
 from adapters.betting import stats as S
 from adapters.betting.ingestion import ALL_SPORT_KEYS, SPORT_KEYS, OddsAPIClient, best_h2h_odds
@@ -63,14 +64,27 @@ class BettingAdapter(Adapter):
         self._events_override = events_override
         # Optional LLM-based pick justification — never invoked in mock mode.
         self._justifier = justifier
+        # Post-hoc isotonic calibrator fitted offline by scripts/calibrate.py
+        # against accumulated resolved poisson_v0.3.0 picks. None on a fresh
+        # clone before that script has ever been run -- calibrate() degrades
+        # gracefully to the raw probability in that case.
+        self._calibrator = C.load_calibrator()
 
     @property
     def model_version(self) -> str:
+        # v0.3.1 (2026-06-20):
+        # - Post-hoc isotonic calibration of model_probability (corrects the
+        #   +16pp overconfidence found across 103 resolved v0.3.0 picks; see
+        #   scripts/calibrate.py). edge/ev/kelly_units/confidence/star_rating
+        #   all now derive from the calibrated probability, not the raw one.
+        # - HOME_ADVANTAGE 1.04 -> 1.05 (adapters/betting/stats.py), confirmed
+        #   via backtest sweep + live re-simulation (scripts/ha_sweep.py,
+        #   scripts/ha_resim.py).
         # v0.3.0 (2026-06-08):
         # - Starting pitcher ERA adjustment via MLB Stats API
         # - Recent form blend: 70% season avg + 30% last-15 games
         # - 50/50 tie redistribution (extra innings ≈ coin flip)
-        return "poisson_v0.3.0"
+        return "poisson_v0.3.1"
 
     def hyperparams(self) -> dict[str, Any]:
         return {
@@ -82,6 +96,7 @@ class BettingAdapter(Adapter):
             "recent_form_weight": 0.30,
             "pitcher_league_avg_era": 4.20,
             "tie_redistribution": "50/50",
+            "calibration": "v1" if self._calibrator is not None else None,
         }
 
     # --- ingestion -------------------------------------------------------- #
@@ -131,33 +146,76 @@ class BettingAdapter(Adapter):
             total = sum(raw_probs)
             if total <= 0:
                 continue
-            model_probs = [p / total for p in raw_probs]
+            raw_model_probs = [p / total for p in raw_probs]
+
+            # Calibrate BEFORE gating, not after. find_value_bets() decides
+            # which selections clear min_ev/min_confidence/market-edge and
+            # become signals at all — that gate must run on the same
+            # calibrated probability that's stored and shown, or a pick can
+            # clear the bar on overconfident raw numbers while its real
+            # (calibrated) EV is negative. Resolved 2026-06-20 — see
+            # CLAUDE.md decision log (previously gated on raw).
+            calibrated_model_probs = [
+                C.calibrate(p, self._calibrator) for p in raw_model_probs
+            ]
+            raw_prob_by_selection = dict(zip(valid_selections, raw_model_probs))
 
             bets = M.find_value_bets(
-                valid_selections, odds, model_probs, self._min_ev, self._min_confidence
+                valid_selections, odds, calibrated_model_probs, self._min_ev, self._min_confidence
             )
             for bet in bets:
+                # bet.model_prob/edge/ev are already calibrated -- they were
+                # computed from calibrated_model_probs above.
+                calibrated_prob = bet.model_prob
+                raw_prob = raw_prob_by_selection[bet.selection]
+                calibrated_kelly = M.kelly_units(calibrated_prob, bet.decimal_odd)
+
                 features = {
                     "match": f"{home} vs {away}",
                     "sport": sport_key,
                     "market": "h2h",
                     "pick": bet.selection,
                     "best_odd": bet.decimal_odd,
-                    "model_probability": round(bet.model_prob, 4),
+                    "model_probability": round(calibrated_prob, 4),
+                    "raw_model_probability": round(raw_prob, 4),
                     "market_probability": round(bet.market_prob, 4),
                     "edge": round(bet.edge, 4),
                     "home_team": home,
                     "away_team": away,
-                    "kelly_units": M.kelly_units(bet.model_prob, bet.decimal_odd),
-                    "star_rating": M.star_rating(
-                        M.kelly_units(bet.model_prob, bet.decimal_odd)
-                    ),
+                    "kelly_units": calibrated_kelly,
+                    "star_rating": M.star_rating(calibrated_kelly),
                 }
                 if pitchers:
+                    home_era = pitchers.get("home_pitcher_era")
+                    away_era = pitchers.get("away_pitcher_era")
                     features["home_pitcher"] = pitchers.get("home_pitcher_name")
                     features["away_pitcher"] = pitchers.get("away_pitcher_name")
-                    features["home_pitcher_era"] = pitchers.get("home_pitcher_era")
-                    features["away_pitcher_era"] = pitchers.get("away_pitcher_era")
+                    features["home_pitcher_era"] = home_era
+                    features["away_pitcher_era"] = away_era
+
+                    # era_diff = (picked team's own starter ERA) - (opponent's
+                    # starter ERA). Very negative = own starter suppresses the
+                    # opponent's offense AND the opponent's starter is weak —
+                    # both favor the pick. Persisted so analysis doesn't have
+                    # to be reconstructed from home/away ERA + pick alone
+                    # (gap flagged in the 103-pick report).
+                    own_era, opp_era = (
+                        (home_era, away_era) if bet.selection == home
+                        else (away_era, home_era) if bet.selection == away
+                        else (None, None)
+                    )
+                    era_diff = None
+                    era_tier = None
+                    if own_era is not None and opp_era is not None:
+                        era_diff = round(own_era - opp_era, 4)
+                        if era_diff < -1.99:
+                            era_tier = "strong"
+                        elif era_diff <= -1.05:
+                            era_tier = "moderate"
+                        else:
+                            era_tier = "weak"
+                    features["era_diff"] = era_diff
+                    features["era_advantage_tier"] = era_tier
 
                 # Optional LLM-generated "why this pick" blurb — jsonb only,
                 # never a typed column. Never invoked in mock mode (no
@@ -171,7 +229,7 @@ class BettingAdapter(Adapter):
                     SignalData(
                         raw_event_key=ev.event_key,
                         signal_type="value_bet",
-                        confidence=bet.model_prob,
+                        confidence=calibrated_prob,
                         expected_value=bet.ev,
                         valid_for_date=ev.event_at.date(),
                         valid_until=ev.event_at,

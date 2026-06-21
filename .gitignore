@@ -35,5 +35,6 @@ htmlcov/
 
 # Backtest artefacts — generated files, not source
 scripts/backtest_results*.csv
+scripts/ha_resim_results.csv
 gl*.zip
 GL*.TXT

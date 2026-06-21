@@ -115,6 +115,91 @@ Built and working:
   `BettingAdapter`. World Cup stays registered in `ALL_SPORT_KEYS` and can
   be re-enabled via `domains.config` jsonb — it never generated valid picks
   because the static ratings map is a placeholder with no real stats feed.
+- **poisson_v0.3.1 — LIVE as of 2026-06-20.** Two changes shipped together:
+  1. **Post-hoc isotonic calibration of `model_probability`** — analysis of
+     103 resolved poisson_v0.3.0 picks found the raw probability
+     overconfident by ~16pp (raw Brier 0.272 vs 0.246 baseline).
+     `scripts/calibrate.py` fits `sklearn.isotonic.IsotonicRegression`
+     against accumulated resolved picks and serializes it to
+     `adapters/betting/calibration_v1.joblib`. `BettingAdapter` loads it at
+     init (`adapters/betting/calibration.py`) and passes raw
+     `model_probability` through it before deriving edge, EV, Kelly units,
+     confidence, and star rating — every downstream *stored/displayed*
+     value is calibrated, never raw. Both `raw_model_probability` and the
+     calibrated `model_probability` are stored in `features` (jsonb).
+     Manual recalibration only — **not** auto-retrained in the daily
+     pipeline; **re-run `scripts/calibrate.py` after the next ~50 newly
+     resolved picks** and overwrite `calibration_v1.joblib`.
+  2. **`HOME_ADVANTAGE` 1.04 → 1.05** in `adapters/betting/stats.py` —
+     confirmed via the backtest sweep (`scripts/ha_sweep.py`) and the
+     103-pick live re-simulation (`scripts/ha_resim.py`); see below.
+  - **RESOLVED 2026-06-20 — gating now uses calibrated probability, not
+    raw.** Previously `generate_signals()` called `find_value_bets()` with
+    the *raw* `model_probs` list, so a pick could clear
+    `min_ev`/`min_confidence`/market-edge on overconfident raw numbers
+    while its real (calibrated) EV was negative. Fixed: each selection's
+    probability is calibrated *before* `find_value_bets()` runs, so the
+    gate and the stored/displayed values are always the same number.
+    `raw_model_probability` is still computed and stored separately for
+    transparency — it's just no longer the gating criterion. Confirmed via
+    mock: the previous mock fixture (Dodgers @ 1.55, raw EV +32.6%,
+    calibrated EV +3.3%) now correctly fails the 5% min_ev gate and
+    generates **zero** signals instead of one — exactly the failure mode
+    this fix closes. A synthetic strong-favorite fixture confirmed the
+    positive path still works (signal generated, calibrated prob clears
+    both thresholds, raw probability still present in `features`).
+- **`era_diff` / `era_advantage_tier` now persisted in `features`:** same
+  103-pick analysis found `era_diff` the only feature with consistent
+  signal across every test. Defined as `(picked team's own starter ERA) -
+  (opponent's starter ERA)` — very negative favors the pick (own starter
+  suppresses the opponent's offense *and* the opponent's starter is weak).
+  Tiered (`strong` / `moderate` / `weak`) for dashboard visibility; no
+  filter or sizing penalty applied yet — observe first, decide on a rule
+  once more data confirms the pattern holds.
+- **`HOME_ADVANTAGE` 1.04 → 1.05 shipped in poisson_v0.3.1 (2026-06-20).**
+  The 103-pick live sample showed home picks winning 66% vs 48% away while
+  the model assigned them nearly equal probability — 1.04 was understating
+  the real home-field effect. Confirmed via two checks before shipping:
+  `scripts/ha_sweep.py` sweeps HA against the 419-game May-2026 backtest
+  dataset (1.05 minimizes Brier within a sane home-pick-rate band, well
+  short of the v0.1.0 100%-home bias at 1.10); `scripts/ha_resim.py`
+  re-simulated all 103 live picks at 1.05 (Brier 0.2722 → 0.2684, **zero
+  picks flip sides**, home Brier 0.2239→0.2218, away Brier 0.3127→0.3075).
+  Both tools remain available for re-validating future HA candidates — they
+  don't hardcode 1.05, they print a recommendation for review. Still
+  flagged as needing more live data (n≥200–250) for full confidence —
+  re-evaluate alongside the next calibration refresh.
+- **`scripts/bin_analysis.py` (Investigation 1): the 60–70% confidence
+  bin's 37.5% win rate is real, not noise.** A binomial test against the
+  bin's declared ~65% confidence gives p=0.0023 (n=32) — statistically
+  significant overconfidence, not sample variance. No single feature
+  (era_diff, home/away split, odds, market probability, edge) distinguishes
+  this bin from its 50–60%/70–80% neighbors; the only significant
+  era_diff difference is between 60–70% and 70–80% (p<0.001), which is
+  just neighbouring bins differing from each other, not a property unique
+  to the 60–70% bin itself. Conclusion: this is exactly the kind of
+  non-monotonic miscalibration isotonic regression is built to fix — no
+  new feature or filter is indicated; the existing calibration work
+  already addresses it.
+- **`scripts/era_weight_sensitivity.py` (Investigation 2): the formula
+  lives in `adapters/betting/stats.py::mlb_lambdas()`**, not
+  `adapters/betting/mlb/model.py` — that path assumes the Phase 1
+  per-league restructure, which hasn't happened (see Phase 1 scope below).
+  Sweeping the ERA-ratio exponent (`(starter_era/league_avg_era) **
+  exponent`) from 0.5→1→2 while holding HOME_ADVANTAGE at the production
+  value (1.04) and RPG blend constant: Brier **improves** at exponent=0.5
+  (0.2469) vs the current exponent=1 (0.2689), and **gets worse** at
+  exponent=2 (0.3185) — the opposite direction from what era_diff's
+  strong univariate signal might suggest. By era tier, "weak" (era_diff >
+  -1.05) wins only 41.9% (n=31) while "strong" (era_diff < -1.99) wins
+  71.9% (n=32) — the tiering itself holds up, but *amplifying* the ERA
+  term in the lambda formula doesn't capture that any better; it overshoots
+  and makes the model more confident in the wrong direction. Sensitivity
+  direction only — not a formula change. era_diff's predictive power may
+  be better captured by a sizing/filter rule on top of the existing
+  formula (the original era_advantage_tier scaffold) rather than reshaping
+  the lambda math itself. Needs more data and/or a proper grid search
+  before any change ships.
 
 Live paper trading status:
 - Started: 2026-05-31
@@ -123,7 +208,13 @@ Live paper trading status:
 - v0.3.0: 48 picks resolved (30W/18L, 62.5%) — gate passed 2026-06-13
   Flat ROI: +23.1% · Kelly ROI: +22.5% · Total staked: 216.3u
   By confidence: 50–60% → 66.7% (n=9) · 60–70% → 53.8% (n=13) · 70%+ → 65.4% (n=26)
+  Final tally at retirement (2026-06-20, n=103): 56.3% win rate. Raw Brier
+  0.272, worse than the 0.246 constant-mean baseline — the overconfidence
+  finding that triggered the v0.3.1 calibration work.
 - ✅ Phase 0 gate cleared: 48 resolved picks (gate: 30), 62.5% win rate (gate: 53%)
+- **poisson_v0.3.1 shipped 2026-06-20** — isotonic calibration +
+  `HOME_ADVANTAGE` 1.04→1.05 (see decisions above). 0 picks resolved yet;
+  first live `daily_picks` run pending confirmation.
 
 Intentionally deferred — do not implement without discussion:
 - **Soccer / World Cup model:** deferred; MLB has 162 games/season, faster
@@ -230,6 +321,24 @@ Intentionally deferred — do not implement without discussion:
   `_send_results_notification()` uses a 1-day backfill window (yesterday only)
   to stay well under the limit. `TelegramChannel._broadcast()` auto-splits any
   message exceeding 3800 chars on newline boundaries as a safety net.
+- **Isotonic regression chosen over Platt scaling for probability
+  calibration** — the miscalibration pattern across confidence bins is
+  non-monotonic (the 60–70% bin actually wins *less* than the 50–60% bin
+  in the 103-pick sample), which a single-sigmoid Platt fit can't represent
+  but isotonic's free-form monotonic step function can.
+  `out_of_bounds='clip'` so probabilities outside the training range don't
+  extrapolate wildly. See `scripts/calibrate.py`.
+- **Calibration gating uses the raw probability, not the calibrated one** —
+  `find_value_bets()` (which decides whether a selection clears
+  `min_ev`/`min_confidence`/market-edge) runs on raw `model_probability`,
+  matching the thresholds as originally tuned. Only the *stored* downstream
+  values (edge, EV, Kelly units, confidence, stars) are recomputed from the
+  calibrated probability. A bet that qualified on raw confidence can still
+  show negative calibrated EV — that's intentional signal, not a bug.
+- **`raw_model_probability` only exists in `features` from poisson_v0.3.1
+  onward** — `scripts/calibrate.py` falls back to reading `model_probability`
+  for any pre-v0.3.1 row that lacks the `raw_` field, since at that point
+  the stored value *was* the raw one.
 
 ## Conventions
 
@@ -266,6 +375,13 @@ Intentionally deferred — do not implement without discussion:
   with a per-version breakdown table (picks, W/L, win rate).
 - `python -m scripts.track pnl --version v0.X.X` — personal P&L filtered to
   a specific model version. Default for both commands is `poisson_v0.3.0`.
+- `python -m scripts.calibrate` — re-fit the probability calibrator against
+  accumulated resolved `poisson_v0.3.0`+ picks; re-run every ~50 newly
+  resolved picks and overwrite `adapters/betting/calibration_v1.joblib`.
+  Manual step, never run automatically by the daily pipeline. `--mock` uses
+  an in-memory DB to prove it never touches Supabase.
+- `python -m scripts.ha_sweep` — sweep `HOME_ADVANTAGE` against the backtest
+  dataset; prints a table only, never modifies `adapters/betting/stats.py`.
 
 ## Phase 1 scope
 

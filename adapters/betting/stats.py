@@ -22,13 +22,21 @@ import requests
 
 # League-average baselines (expected goals/runs for an average team per game).
 SOCCER_BASELINE = 1.35  # avg goals per team in a World Cup match (approx.)
-# 1.04 matches the empirical MLB home win rate (~53%).
-# At 1.10 the model generates 72%+ home picks and inflates
-# confidence in the 70%+ band. Backtest confirmed overall
-# accuracy is insensitive to this parameter (57.8-58.2%
-# across HA=1.00-1.10); 1.04 improves calibration without
-# sacrificing performance. Applied at 30-pick gate 2026-06-04.
-HOME_ADVANTAGE = 1.04
+# 1.05 (poisson_v0.3.1, 2026-06-20): bumped from 1.04. The 103-pick live
+# sample showed home picks winning 66% vs 48% away while the model assigned
+# them nearly equal probability -- 1.04 was understating the real home-field
+# effect. Confirmed via two independent checks before shipping: the 419-game
+# May-2026 backtest sweep (1.05 minimizes Brier within a sane home-pick-rate
+# band, well short of the v0.1.0 100%-home bias seen at 1.10) and a
+# re-simulation of all 103 live picks at 1.05 (Brier 0.2722 -> 0.2684, zero
+# picks flip sides). See scripts/ha_sweep.py and scripts/ha_resim.py.
+# Still flagged as needing more live data (n>=200-250) for a fully confident
+# read -- re-evaluate alongside the next calibration refresh.
+#
+# History: 1.04 matched the empirical MLB home win rate (~53%) and replaced
+# 1.10, which generated 72%+ home picks and inflated confidence in the 70%+
+# band. Applied at the 30-pick gate, 2026-06-04.
+HOME_ADVANTAGE = 1.05
 
 # MLB team name -> MLB Stats API team ID. Required for the schedule endpoint
 # (recent-form game logs and probable-pitcher lookups are keyed by teamId).
