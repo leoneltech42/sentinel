@@ -339,6 +339,23 @@ Intentionally deferred — do not implement without discussion:
   onward** — `scripts/calibrate.py` falls back to reading `model_probability`
   for any pre-v0.3.1 row that lacks the `raw_` field, since at that point
   the stored value *was* the raw one.
+- **API default model_version is a semantic-version floor, not a hardcoded
+  exact string.** `GET /outcomes`, `GET /pnl/global`, `GET /pnl/personal`
+  used to default `model_version` to the literal `"poisson_v0.3.0"` —
+  every time a new version shipped, default views would silently exclude
+  it until someone updated the hardcoded string. Fixed via
+  `api/lib/versioning.py`: when `model_version` is *omitted*, the query
+  filters to all versions where `meets_baseline(version,
+  PRODUCTION_MODEL_BASELINE)` is true (parsed as `poisson_vMAJOR.MINOR.PATCH`
+  tuples, compared as tuples). `PRODUCTION_MODEL_BASELINE` defaults to
+  `poisson_v0.3.0` — v0.1.0/v0.2.0 stay permanently excluded from default
+  views (discarded for cause — HOME_ADVANTAGE bugs — not just superseded).
+  An *explicit* `model_version=<exact>` or `model_version=all` param
+  bypasses the floor entirely and behaves exactly as before — the floor
+  only kicks in when the param is absent. The web dropdown's default
+  option now reads "Production (vX.Y.Z+)" and omits the `model_version`
+  query param when selected, rather than sending a hardcoded version
+  string — see `web/components/pnl/FilterBar.tsx`.
 
 ## Conventions
 
@@ -444,8 +461,14 @@ Target structure:
 
 **Infra**
 - FastAPI on Railway. Next.js on Vercel.
-- New env vars: SENTINEL_API_KEY, DASHBOARD_USER, DASHBOARD_PASSWORD.
-- Add all three to .env.example at repo root.
+- New env vars: SENTINEL_API_KEY, DASHBOARD_USER, DASHBOARD_PASSWORD,
+  PRODUCTION_MODEL_BASELINE.
+- Add all four to .env.example at repo root.
+- ⚠️ **PRODUCTION_MODEL_BASELINE must be added to Railway's environment
+  variables manually** (dashboard or `railway variables set`) — not set via
+  this session. Defaults to `poisson_v0.3.0` in code if unset, so omitting
+  it on Railway is non-breaking, just loses the ability to advance the
+  floor without redeploying.
 - Existing GitHub Actions workflows unchanged.
 
 ## What to ask before doing

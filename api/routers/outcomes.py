@@ -10,13 +10,12 @@ from sqlalchemy.orm import Session, selectinload
 
 from api.auth import require_api_key
 from api.dependencies import get_db, get_user_id
+from api.lib.versioning import production_baseline, qualifying_versions_for_domain
 from api.routers.picks import _derive_sport_league
 from api.schemas import OutcomeResponse
 from core.models import Domain, ModelRun, Signal, SignalOutcome, UserSignalView
 
 router = APIRouter(tags=["outcomes"], dependencies=[Depends(require_api_key)])
-
-_DEFAULT_VERSION = "poisson_v0.3.0"
 
 
 @router.get("/outcomes", response_model=list[OutcomeResponse])
@@ -24,7 +23,7 @@ def get_outcomes(
     target_date: Annotated[date | None, Query(alias="date")] = None,
     sport: str | None = None,
     league: str | None = None,
-    model_version: str = _DEFAULT_VERSION,
+    model_version: str | None = None,
     session: Session = Depends(get_db),
     user_id: uuid.UUID = Depends(get_user_id),
 ) -> list[OutcomeResponse]:
@@ -48,7 +47,15 @@ def get_outcomes(
     if league:
         q = q.where(Signal.features["sport"].as_string().like(f"%_{league}"))
 
-    if model_version != "all":
+    if model_version is None:
+        # No explicit version requested -- default to the production floor
+        # (this version and everything semantically greater), not a single
+        # hardcoded exact string.
+        qualifying = qualifying_versions_for_domain(session, "betting", production_baseline())
+        q = q.join(ModelRun, Signal.model_run_id == ModelRun.id).where(
+            ModelRun.model_version.in_(qualifying)
+        )
+    elif model_version != "all":
         q = (
             q.join(ModelRun, Signal.model_run_id == ModelRun.id)
             .where(ModelRun.model_version == model_version)

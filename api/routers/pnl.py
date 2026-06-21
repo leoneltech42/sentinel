@@ -8,12 +8,11 @@ from sqlalchemy.orm import Session, selectinload
 
 from api.auth import require_api_key
 from api.dependencies import get_db, get_user_id
+from api.lib.versioning import production_baseline, qualifying_versions_for_domain
 from api.schemas import PnlResponse
 from core.models import Domain, ModelRun, Signal, SignalOutcome, UserSignalView
 
 router = APIRouter(prefix="/pnl", tags=["pnl"], dependencies=[Depends(require_api_key)])
-
-_DEFAULT_VERSION = "poisson_v0.3.0"
 
 
 def _compute_pnl(rows: list[SignalOutcome], stakes: dict[uuid.UUID, float]) -> PnlResponse:
@@ -45,7 +44,26 @@ def _compute_pnl(rows: list[SignalOutcome], stakes: dict[uuid.UUID, float]) -> P
     )
 
 
-def _global_outcomes(session: Session, model_version: str) -> list[SignalOutcome]:
+def _apply_version_filter(q, session: Session, model_version: str | None):
+    """Shared version-filter logic for the global/personal outcome queries.
+
+    model_version is None  -> production floor (qualifying_versions_for_domain)
+    model_version == "all" -> no filter
+    model_version == exact -> exact match, unaffected by the floor
+    """
+    if model_version is None:
+        qualifying = qualifying_versions_for_domain(session, "betting", production_baseline())
+        return q.join(ModelRun, Signal.model_run_id == ModelRun.id).where(
+            ModelRun.model_version.in_(qualifying)
+        )
+    if model_version != "all":
+        return q.join(ModelRun, Signal.model_run_id == ModelRun.id).where(
+            ModelRun.model_version == model_version
+        )
+    return q
+
+
+def _global_outcomes(session: Session, model_version: str | None) -> list[SignalOutcome]:
     q = (
         select(SignalOutcome)
         .join(Signal, SignalOutcome.signal_id == Signal.id)
@@ -53,15 +71,12 @@ def _global_outcomes(session: Session, model_version: str) -> list[SignalOutcome
         .where(Domain.slug == "betting")
         .options(selectinload(SignalOutcome.signal))
     )
-    if model_version != "all":
-        q = q.join(ModelRun, Signal.model_run_id == ModelRun.id).where(
-            ModelRun.model_version == model_version
-        )
+    q = _apply_version_filter(q, session, model_version)
     return list(session.scalars(q).all())
 
 
 def _personal_outcomes(
-    session: Session, user_id: uuid.UUID, model_version: str
+    session: Session, user_id: uuid.UUID, model_version: str | None
 ) -> tuple[list[SignalOutcome], dict[uuid.UUID, float]]:
     views = session.scalars(
         select(UserSignalView).where(
@@ -85,16 +100,13 @@ def _personal_outcomes(
         )
         .options(selectinload(SignalOutcome.signal))
     )
-    if model_version != "all":
-        q = q.join(ModelRun, Signal.model_run_id == ModelRun.id).where(
-            ModelRun.model_version == model_version
-        )
+    q = _apply_version_filter(q, session, model_version)
     return list(session.scalars(q).all()), stakes
 
 
 @router.get("/global", response_model=PnlResponse)
 def pnl_global(
-    model_version: str = _DEFAULT_VERSION,
+    model_version: str | None = None,
     session: Session = Depends(get_db),
 ) -> PnlResponse:
     rows = _global_outcomes(session, model_version)
@@ -104,7 +116,7 @@ def pnl_global(
 
 @router.get("/personal", response_model=PnlResponse)
 def pnl_personal(
-    model_version: str = _DEFAULT_VERSION,
+    model_version: str | None = None,
     session: Session = Depends(get_db),
     user_id: uuid.UUID = Depends(get_user_id),
 ) -> PnlResponse:

@@ -7,12 +7,19 @@ import { confidenceToStars } from "@/lib/utils";
 import MetricCards from "./MetricCards";
 import FilteredMetrics from "./FilteredMetrics";
 import PnlChart, { type ChartPoint } from "./PnlChart";
-import FilterBar, { type Filters } from "./FilterBar";
+import FilterBar, { PRODUCTION_FILTER_VALUE, type Filters } from "./FilterBar";
 import OutcomesTable from "./OutcomesTable";
 
 type Mode = "global" | "personal";
 
-const DEFAULT_VERSION = "poisson_v0.3.0";
+const DEFAULT_VERSION = PRODUCTION_FILTER_VALUE;
+
+// PRODUCTION_FILTER_VALUE is a UI-only sentinel -- translate it to "omit the
+// param" so the server applies its own PRODUCTION_MODEL_BASELINE floor
+// instead of us sending a hardcoded exact version string.
+function apiVersionParam(modelVersion: string): string | undefined {
+  return modelVersion === PRODUCTION_FILTER_VALUE ? undefined : modelVersion;
+}
 
 export default function PnlShell({
   globalPnl: initialGlobalPnl,
@@ -41,7 +48,7 @@ export default function PnlShell({
     setLoading(true);
     Promise.all([
       getOutcomes(undefined, "all").catch(() => [] as OutcomeResponse[]),
-      getOutcomes(undefined, DEFAULT_VERSION).catch(() => [] as OutcomeResponse[]),
+      getOutcomes(undefined, apiVersionParam(DEFAULT_VERSION)).catch(() => [] as OutcomeResponse[]),
     ]).then(([allRows, defaultRows]) => {
       setAllVersionOutcomes(allRows);
       setOutcomes(defaultRows);
@@ -57,10 +64,11 @@ export default function PnlShell({
       return;
     }
     setLoading(true);
+    const versionParam = apiVersionParam(modelVersion);
     Promise.all([
-      getOutcomes(undefined, modelVersion).catch(() => [] as OutcomeResponse[]),
-      getGlobalPnl(modelVersion).catch(() => null),
-      getPersonalPnl(modelVersion).catch(() => null),
+      getOutcomes(undefined, versionParam).catch(() => [] as OutcomeResponse[]),
+      getGlobalPnl(versionParam).catch(() => null),
+      getPersonalPnl(versionParam).catch(() => null),
     ]).then(([newOutcomes, newGlobal, newPersonal]) => {
       setOutcomes(newOutcomes);
       setGlobalPnl(newGlobal);
