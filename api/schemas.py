@@ -52,3 +52,7 @@ class PnlResponse(BaseModel):
     wins: int
     win_rate: float
     kelly_roi: float
+
+
+class RefreshResponse(BaseModel):
+    status: str  # "started" -- the refresh runs in a background task

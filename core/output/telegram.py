@@ -80,7 +80,6 @@ def _format_picks(signals: list[Signal], for_date: date, domain: str = "betting"
         lines.append(f"   Edge: {edge:+.1%} | EV: {ev:+.1%}")
         justification = f.get("justification")
         lines.append(f"<i>&#128161; {_esc(justification)}</i>" if justification else "")
-        lines.append(f"   <code>python -m scripts.track follow {str(s.id)[:8]} </code>")
         lines.append("")
 
     n = len(signals)
@@ -141,11 +140,13 @@ def _confidence_stars(confidence: float) -> str:
 
 
 def _format_results(signals: list[Signal], for_date: date, domain: str = "betting") -> str:
+    """Today's resolved picks only. The web dashboard now shows full history,
+    so this message no longer carries a prior-days backfill section (that
+    section also caused the Phillies/Mets same-matchup confusion -- see
+    CLAUDE.md decision log)."""
     lines: list[str] = [f"<b>&#128202; Sentinel results &#8212; {for_date}</b>", ""]
 
-    # Partition by valid_for_date: today's picks vs backfill from prior days.
-    today_sigs   = [s for s in signals if s.valid_for_date == for_date]
-    backfill_sigs = [s for s in signals if s.valid_for_date != for_date]
+    today_sigs = [s for s in signals if s.valid_for_date == for_date]
 
     def _render_section(section: list[Signal], offset: int = 0) -> None:
         for j, s in enumerate(section, offset + 1):
@@ -184,7 +185,6 @@ def _format_results(signals: list[Signal], for_date: date, domain: str = "bettin
                     lines.append(f"   {word}{score}{ev_stars}")
             lines.append("")
 
-    # --- Section 1: today's picks ---
     display_today = [s for s in today_sigs if s.status in ("resolved", "void")]
     pending       = [s for s in today_sigs if s.status == "active"]
     resolved_today = [s for s in today_sigs if s.status == "resolved"]
@@ -205,14 +205,6 @@ def _format_results(signals: list[Signal], for_date: date, domain: str = "bettin
 
     lines.append(f"Pending: {len(pending)} signal{'s' if len(pending) != 1 else ''} "
                  "still unresolved")
-
-    # --- Section 2: backfill (only when present) ---
-    display_backfill = [s for s in backfill_sigs if s.status in ("resolved", "void")]
-    if display_backfill:
-        lines.append("")
-        lines.append("<i>Backfilled from previous days:</i>")
-        lines.append("")
-        _render_section(display_backfill)
 
     return "\n".join(lines)
 
@@ -291,7 +283,6 @@ def _format_refresh(
             lines.append("<i>&#128260; Justification will refresh on next run</i>")
         else:
             lines.append("")  # blank line (no justification yet — first run)
-        lines.append(f"<code>python -m scripts.track follow {str(s.id)[:8]} </code>")
         lines.append("")
 
     followed_count  = sum(1 for s in signals if s.id in followed_ids)

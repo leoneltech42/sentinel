@@ -196,35 +196,11 @@ def main() -> None:
 # --------------------------------------------------------------------------- #
 
 def _build_betting_adapter(args):
-    from adapters.betting.adapter import BettingAdapter
-    today = datetime.now(timezone.utc).date()
-    season = int(os.getenv("SEASON", today.year))
-    events_override = None
-    mlb_runs_override = None
-    mlb_pitchers_override = None
-    justifier = None
-    if args.mock:
-        from scripts.sample_data import sample_events, sample_mlb_runs, sample_mlb_pitchers
-        events_override = sample_events()
-        mlb_runs_override = sample_mlb_runs()
-        mlb_pitchers_override = sample_mlb_pitchers()
-        # Never call an LLM API in mock mode — justifier stays None.
-    else:
-        from adapters.betting.justification import LLMJustifier
-        if api_key := os.getenv("LLM_JUSTIFIER_API_KEY"):
-            justifier = LLMJustifier(
-                api_key=api_key,
-                base_url=os.getenv("LLM_JUSTIFIER_BASE_URL", "https://api.groq.com/openai/v1"),
-                model=os.getenv("LLM_JUSTIFIER_MODEL", "llama-3.3-70b-versatile"),
-            )
-    return BettingAdapter(
-        api_key=os.getenv("ODDS_API_KEY", ""),
-        season=season,
-        events_override=events_override,
-        mlb_runs_override=mlb_runs_override,
-        mlb_pitchers_override=mlb_pitchers_override,
-        justifier=justifier,
-    )
+    # Shared with the FastAPI POST /refresh endpoint -- see
+    # adapters/betting/refresh.py so there's exactly one place that builds
+    # the live adapter from env vars / mock fixtures.
+    from adapters.betting.refresh import build_betting_adapter
+    return build_betting_adapter(mock=args.mock)
 
 
 def _build_flights_adapter(args, session):
@@ -380,10 +356,12 @@ def _verify_outcomes_supabase(session, target_date: date) -> None:
     Two sections:
       1. Results for target_date  — signals whose valid_for_date == target_date.
          Includes resolved (outcome row) and void (no outcome row) picks.
-      2. Historical backfill — resolved/void signals from the 7 days prior,
-         shown only when any exist. These were resolved on previous runs;
-         the label is "Historical outcomes" to avoid implying they were
-         created in the current run.
+      2. Previously resolved (7 days prior) — shown only when any exist.
+         These were resolved on their OWN day's run, not this one; the
+         label and "on record" tag avoid implying they were just created.
+         Per-row date tags disambiguate same-matchup back-to-back games
+         (e.g. Phillies vs Mets playing on consecutive days is two
+         distinct signals, not a duplicate — see CLAUDE.md).
     """
     from core.models import Domain
 
@@ -460,7 +438,7 @@ def _verify_outcomes_supabase(session, target_date: date) -> None:
         (Signal.valid_for_date >= cutoff) & (Signal.valid_for_date < target_date)
     )
     if back_rows or back_void:
-        _print_section(back_rows, back_void, "Historical backfill (7-day window)",
+        _print_section(back_rows, back_void, "Previously resolved (last 7 days)",
                        created_today=False)
 
 
@@ -515,24 +493,22 @@ def _send_picks_notification(signals: list[Signal], for_date: date, domain: str)
 
 def _send_results_notification(session, for_date: date, domain: str) -> None:
     from core.output import notify_results
-    # Today's picks + yesterday's backfill only.  Wider windows push the
-    # Telegram message past the 4096-char limit; the terminal display keeps
-    # the full 7-day window for investigation purposes.
-    yesterday = for_date - timedelta(days=1)
+    # Today's resolved picks only -- the Telegram message no longer carries a
+    # prior-days backfill section (web dashboard shows full history instead;
+    # the terminal display in _verify_outcomes_supabase() keeps the 7-day
+    # window for debugging).
     signals = list(session.scalars(
         select(Signal)
         .where(
-            Signal.valid_for_date >= yesterday,
-            Signal.valid_for_date <= for_date,
+            Signal.valid_for_date == for_date,
             Signal.status.in_(["resolved", "void"]),
         )
         .options(selectinload(Signal.outcome))
-        .order_by(Signal.valid_for_date.desc(), Signal.expected_value.desc())
+        .order_by(Signal.expected_value.desc())
     ).all())
     try:
         notify_results(signals, for_date, domain=domain)
-        resolved = sum(1 for s in signals if s.status == "resolved"
-                       and s.valid_for_date == for_date)
+        resolved = sum(1 for s in signals if s.status == "resolved")
         print(f"  Telegram results notification sent ({resolved} resolved today).")
     except Exception as exc:
         print(f"  Telegram notification failed (results): {exc}")

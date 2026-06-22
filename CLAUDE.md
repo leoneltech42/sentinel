@@ -251,8 +251,79 @@ Intentionally deferred — do not implement without discussion:
   Supabase Auth — nothing else in that file needs to change.
 - Back-to-back games for the same team on consecutive dates are valid,
   distinct signals — not duplicates. Dedup key is `(event_key, pick)`.
-- Telegram picks message shows full signal UUID in a `<code>` block so it
-  can be pasted directly into `scripts/track.py follow`.
+- **Investigated 2026-06-22: no missing "6th pick" on 2026-06-21 — the
+  reported count was off, not the system.** All 5 signals for that date
+  are accounted for: 4 inserted by the 12:27 UTC `daily_picks` run
+  (Reds, Giants, Angels, Phillies), 1 (Padres) newly qualified and
+  inserted by the 16:58 UTC `--refresh` run when the Rangers-Padres
+  game's odds moved — its `RawEvent` existed from the morning ingest but
+  didn't clear the calibrated EV/confidence gate until refresh. That's
+  4+1=5, matching both the resolution output and the web dashboard
+  exactly — there's no invisible 6th signal. All three hypothesized
+  causes (model_version mismatch, status filter, UTC date-shift) were
+  individually ruled out — all 5 signals are `poisson_v0.3.1`,
+  `status='resolved'`, `valid_for_date=2026-06-21`. Replaying that
+  morning's stored odds through `generate_signals()` *today* surfaces a
+  6th candidate (Dodgers vs Orioles) — but this is reconstruction drift,
+  not a missed signal: the replay uses today's live pitcher-ERA/recent-RPG
+  data, which has shifted since 6/21 (same caveat documented for
+  `scripts/ha_resim.py`). Noted here so a future session doesn't re-chase
+  this red herring.
+- **`Signal.model_run_id` always reflects the most recent run that
+  touched it, not the run that created it.** `run_pipeline()`'s upsert
+  path (`core/orchestrator.py`) sets `existing.model_run_id = run.id` on
+  every update, even a same-pick odds-noise refresh. Confirmed while
+  investigating the above: the morning run's `model_runs` row showed
+  `n_signals=0` because all 4 signals it created were later touched by
+  the afternoon refresh and reassigned to *that* run's id. Cosmetic
+  surprise, not a bug — `Signal.created_at` is still the reliable field
+  for "when was this signal first generated."
+- **Telegram results message hides which date a backfilled pick belongs
+  to.** Confirmed 2026-06-22: a same-matchup back-to-back series (e.g.
+  Phillies vs Mets on consecutive days) renders identically in the
+  "Backfilled from previous days" section except for score — looks like
+  a duplicate/re-resolved pick, but `signal_outcomes.resolved_at` confirms
+  each was resolved on its own day's run, never re-resolved (the
+  `existing_outcome` guard in `run_resolution()` is working correctly —
+  zero signals in the 7-day backfill window were found in a pending
+  `active`/`expired` state, all are already `resolved` or `void`).
+  Fixed: `core/output/telegram.py::_format_results()`'s backfill section
+  now appends a `[YYYY-MM-DD]` date tag per row (`_render_section(...,
+  show_date=True)`) and the label changed from "Backfilled from previous
+  days" to "Previously resolved (last 7 days)" to stop implying these
+  were just resolved by the current run. The terminal output
+  (`scripts/paper_trade.py::_verify_outcomes_supabase`) already had a
+  per-row date tag; only its section header was relabeled to match
+  ("Previously resolved (last 7 days)", was "Historical backfill (7-day
+  window)") — no behavior change there, display-only fix in both places.
+- **Telegram no longer carries follow commands or a backfill section
+  (2026-06-22) — following and history live on the web dashboard now.**
+  `_format_picks()`/`_format_refresh()` no longer append
+  `python -m scripts.track follow <id>` lines; `_format_results()` no
+  longer renders the "Previously resolved" section (today's resolved
+  picks only). `_send_results_notification()` in `paper_trade.py` now
+  queries only `for_date` instead of a 1-day backfill window, since the
+  data it fetched is no longer rendered. Terminal output
+  (`_verify_outcomes_supabase()`) is unchanged — still shows the 7-day
+  backfill window for debugging.
+- **`POST /refresh` (web dashboard on-demand refresh) reuses the exact
+  same pipeline path as `daily_refresh.yml`** — `adapters/betting/
+  refresh.py::build_betting_adapter()` was extracted from
+  `scripts/paper_trade.py`'s CLI-coupled `_build_betting_adapter(args)`
+  so both the CLI and the API call the identical adapter-construction
+  logic (env vars / mock fixtures), not a duplicate. `run_refresh()` in
+  the same module wraps `run_pipeline()` and diffs a pre-run
+  `snapshot_signals()` snapshot to report `odds_updated`/
+  `justifications_updated` counts. The endpoint
+  (`api/routers/refresh.py`) runs this in a FastAPI `BackgroundTask` and
+  returns `{"status": "started"}` immediately (202) — idempotent, since
+  it relies on `run_pipeline()`'s existing upsert-or-insert semantics.
+  ⚠️ **`TestClient` runs `BackgroundTasks` synchronously before
+  returning** (unlike a real deployed server) — verifying this endpoint
+  with `TestClient` triggers a real live-API refresh against
+  `DATABASE_URL`/`ODDS_API_KEY`. Harmless (same idempotent operation
+  `daily_refresh` already runs), but worth knowing before writing
+  automated tests against this route.
 - Soccer / World Cup model deferred — static `WORLD_CUP_RATINGS` map in
   `adapters/betting/stats.py` is a placeholder; without a real stats feed it
   just reads the market back and finds no genuine edge.

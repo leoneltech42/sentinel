@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import Link from "next/link";
 import NavLinks from "@/components/NavLinks";
+import RefreshButton from "@/components/RefreshButton";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -77,7 +78,10 @@ export default function RootLayout({
             <LogoMark />
             <span style={{ fontSize: 15, fontWeight: 500 }}>Sentinel</span>
           </Link>
-          <NavLinks />
+          <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+            <NavLinks />
+            <RefreshButton />
+          </div>
         </header>
         <main
           style={{

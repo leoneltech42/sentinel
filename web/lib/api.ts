@@ -42,6 +42,10 @@ export interface PnlResponse {
   kelly_roi: number;
 }
 
+export interface RefreshResponse {
+  status: string;
+}
+
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const API_KEY = process.env.API_KEY ?? process.env.NEXT_PUBLIC_API_KEY ?? ''
 
@@ -105,4 +109,8 @@ export function getPersonalPnl(modelVersion?: string): Promise<PnlResponse> {
   if (modelVersion) p.set("model_version", modelVersion);
   const qs = p.toString();
   return apiFetch(`/pnl/personal${qs ? `?${qs}` : ""}`);
+}
+
+export function postRefresh(): Promise<RefreshResponse> {
+  return apiFetch(`/refresh`, { method: "POST" });
 }
