@@ -24,9 +24,11 @@ function apiVersionParam(modelVersion: string): string | undefined {
 export default function PnlShell({
   globalPnl: initialGlobalPnl,
   personalPnl: initialPersonalPnl,
+  productionBaseline,
 }: {
   globalPnl: PnlResponse | null;
   personalPnl: PnlResponse | null;
+  productionBaseline: string;
 }) {
   const [mode, setMode] = useState<Mode>("global");
   const [outcomes, setOutcomes] = useState<OutcomeResponse[]>([]);
@@ -181,6 +183,7 @@ export default function PnlShell({
         selectedStars={selectedStars}
         onStarsChange={setSelectedStars}
         onResetFilters={handleResetFilters}
+        productionBaseline={productionBaseline}
       />
 
       {loading ? (

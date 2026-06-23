@@ -26,3 +26,17 @@ web app for any other client and the backend doesn't change.
 
 Contracts are defined with Pydantic models, shared with the validation layer so
 the API shape and the data shape can't drift apart.
+
+## Deployment
+
+Hosted on Railway. **Deploys are manual** — pushing to GitHub does not
+trigger a deploy by itself.
+
+- **Production URL:** https://sentinel-api-production-746a.up.railway.app
+- **Deploy:** `railway up --service "Sentinel API"` from the repo root
+  (requires `railway login` once; CLI install: `npm i -g @railway/cli`)
+- **Check status:** `railway status`
+- Env vars (`SENTINEL_API_KEY`, `DATABASE_URL`, `ODDS_API_KEY`,
+  `PRODUCTION_MODEL_BASELINE`, etc.) are set directly in the Railway
+  dashboard — see `.env.example` at the repo root for the full list and
+  what each one does.

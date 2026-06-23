@@ -27,10 +27,11 @@ const DEFAULT_STARS = [1, 2, 3, 4, 5];
 // Sentinel value for "use the server's production floor" -- selecting this
 // omits model_version from the API call entirely (see PnlShell.tsx), rather
 // than sending a hardcoded exact version string that goes stale the moment
-// a new model version ships. The label is a human-readable approximation of
-// the current PRODUCTION_MODEL_BASELINE; it doesn't read the env var live.
+// a new model version ships. The displayed label is built from the
+// productionBaseline prop (sourced from GET /config -> PRODUCTION_MODEL_BASELINE),
+// not a hardcoded string -- so if that env var is ever bumped, the label
+// stays accurate with no frontend redeploy required.
 export const PRODUCTION_FILTER_VALUE = "production";
-export const PRODUCTION_FILTER_LABEL = "Production (v0.3.0+)";
 const DEFAULT_MODEL = PRODUCTION_FILTER_VALUE;
 
 function isDirty(
@@ -60,6 +61,7 @@ export default function FilterBar({
   selectedStars,
   onStarsChange,
   onResetFilters,
+  productionBaseline,
 }: {
   filters: Filters;
   sports: string[];
@@ -71,8 +73,10 @@ export default function FilterBar({
   selectedStars: number[];
   onStarsChange: (stars: number[]) => void;
   onResetFilters: () => void;
+  productionBaseline: string;
 }) {
   const dirty = isDirty(filters, modelVersion, selectedStars);
+  const productionLabel = `Production (${productionBaseline}+)`;
 
   function toggleStar(level: number) {
     if (selectedStars.includes(level)) {
@@ -104,7 +108,7 @@ export default function FilterBar({
           onChange={(e) => onModelVersionChange(e.target.value)}
           style={selectStyle}
         >
-          <option value={PRODUCTION_FILTER_VALUE}>{PRODUCTION_FILTER_LABEL}</option>
+          <option value={PRODUCTION_FILTER_VALUE}>{productionLabel}</option>
           <option value="all">All models</option>
           {modelVersions.map((v) => (
             <option key={v} value={v}>

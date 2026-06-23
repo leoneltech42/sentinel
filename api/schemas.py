@@ -56,3 +56,7 @@ class PnlResponse(BaseModel):
 
 class RefreshResponse(BaseModel):
     status: str  # "started" -- the refresh runs in a background task
+
+
+class ConfigResponse(BaseModel):
+    production_model_baseline: str  # api/lib/versioning.py::production_baseline()
