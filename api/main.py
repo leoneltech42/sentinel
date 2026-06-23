@@ -7,7 +7,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import follow, outcomes, picks, pnl, refresh
+from api.routers import config, follow, outcomes, picks, pnl, refresh
 
 app = FastAPI(title="Sentinel API", version="1.0.0")
 
@@ -23,3 +23,4 @@ app.include_router(outcomes.router)
 app.include_router(follow.router)
 app.include_router(pnl.router)
 app.include_router(refresh.router)
+app.include_router(config.router)

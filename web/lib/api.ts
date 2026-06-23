@@ -46,6 +46,10 @@ export interface RefreshResponse {
   status: string;
 }
 
+export interface ConfigResponse {
+  production_model_baseline: string;
+}
+
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const API_KEY = process.env.API_KEY ?? process.env.NEXT_PUBLIC_API_KEY ?? ''
 
@@ -113,4 +117,8 @@ export function getPersonalPnl(modelVersion?: string): Promise<PnlResponse> {
 
 export function postRefresh(): Promise<RefreshResponse> {
   return apiFetch(`/refresh`, { method: "POST" });
+}
+
+export function getConfig(): Promise<ConfigResponse> {
+  return apiFetch(`/config`);
 }

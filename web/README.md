@@ -29,8 +29,23 @@ To learn more about Next.js, take a look at the following resources:
 
 You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-## Deploy on Vercel
+## Deployment
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Hosted on Vercel. **Deploys are manual** — pushing to GitHub does not
+trigger a deploy by itself.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Production URL:** https://sentinel-dashboard-fawn.vercel.app
+- **Deploy:** `vercel --prod` from this directory (`web/`)
+  (requires `vercel login` once; CLI install: `npm i -g vercel`)
+
+⚠️ Every `vercel --prod` run creates a **new** deployment with its own
+permanent, unique URL (e.g. `sentinel-dashboard-<hash>-leonel-delta-7.vercel.app`).
+That per-deployment URL never changes content, even after the next deploy —
+it's a frozen snapshot. **Always use the production URL above** (or run
+`vercel alias ls` to see all aliases currently pointing at the live
+deployment) — don't bookmark a `vercel --prod` output URL and expect it to
+stay current.
+
+Basic Auth (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`) and `NEXT_PUBLIC_API_URL`
+/ `NEXT_PUBLIC_API_KEY` are set as Vercel project env vars — see
+`.env.local.example` for the full list.
