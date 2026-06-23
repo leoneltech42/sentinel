@@ -230,6 +230,12 @@ Intentionally deferred — do not implement without discussion:
   `domains.config` jsonb; deferred to Phase 1
 - **Flights resolution:** re-fetch prices after 7 days to verify `was_correct`;
   stub exists in `adapter.py`, wiring deferred to Phase 1
+- **Pagination for the picks/outcomes list (web dashboard):** `GET /picks`,
+  `GET /outcomes`, and the `/pnl` table currently fetch and render the full
+  result set with no limit/offset. Fine at current volume; flagged
+  2026-06-22 as a forward-looking concern — once the picks list grows large
+  enough, unpaginated fetch+render will slow down page load. No pagination
+  needed yet; revisit when picks volume actually causes a noticeable slowdown.
 
 ## Recorded design decisions
 
