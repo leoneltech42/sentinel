@@ -72,7 +72,7 @@ def follow_signal(
 
     raw = session.get(RawEvent, sig.raw_event_id)
     event_key = raw.event_key if raw else ""
-    return _build_pick(sig, event_key, followed=True)
+    return _build_pick(sig, event_key, followed=True, personal_stake=stake)
 
 
 @router.delete("/{signal_id}/follow", status_code=status.HTTP_204_NO_CONTENT, response_model=None)

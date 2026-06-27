@@ -66,7 +66,12 @@ export default function PickCard({
 }) {
   const [pick, setPick] = useState(initialPick);
   const [followed, setFollowed] = useState(initialPick.followed);
-  const [stake, setStake] = useState(initialPick.stake_units);
+  // personal_stake (what you actually staked, locked in at follow time) takes
+  // priority over stake_units (the model's current, possibly-since-changed
+  // suggestion) -- otherwise this card silently drifts to the model's latest
+  // number after a refresh upserts the signal, even though your real stake
+  // never changed.
+  const [stake, setStake] = useState(initialPick.personal_stake ?? initialPick.stake_units);
   const [modal, setModal] = useState<ModalMode>(null);
 
   const edge =
@@ -86,7 +91,7 @@ export default function PickCard({
   const handleFollowed = (updated: PickResponse) => {
     setPick(updated);
     setFollowed(true);
-    setStake(updated.stake_units);
+    setStake(updated.personal_stake ?? updated.stake_units);
     setModal(null);
   };
 

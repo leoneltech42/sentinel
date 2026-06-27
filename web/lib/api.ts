@@ -15,6 +15,7 @@ export interface PickResponse {
   status: "active" | "expired" | "resolved" | "void";
   outcome: "won" | "lost" | "void" | null;
   score: string | null;
+  personal_stake: number | null;
 }
 
 export interface OutcomeResponse {

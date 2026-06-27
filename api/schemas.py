@@ -17,12 +17,13 @@ class PickResponse(BaseModel):
     confidence: float
     ev: float            # Signal.expected_value
     odds: float          # features['best_odd']
-    stake_units: float   # features['kelly_units']
+    stake_units: float   # features['kelly_units'] -- the model's current suggestion
     justification: str | None
     followed: bool
     status: str          # 'active' | 'expired' | 'resolved' | 'void'
     outcome: str | None  # 'won' | 'lost' | 'void' | None
     score: str | None    # "{away_score}-{home_score}" from outcome_metadata
+    personal_stake: float | None  # user_signal_views.stake if followed; locked in at follow time
 
 
 class FollowRequest(BaseModel):

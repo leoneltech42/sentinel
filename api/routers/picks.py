@@ -34,6 +34,7 @@ def _build_pick(
     event_key: str,
     followed: bool,
     score: str | None = None,
+    personal_stake: float | None = None,
 ) -> PickResponse:
     f = signal.features
     sport_key = f.get("sport", "_")
@@ -55,6 +56,7 @@ def _build_pick(
         status=signal.status,
         outcome=_outcome_label(signal),
         score=score,
+        personal_stake=personal_stake,
     )
 
 
@@ -96,7 +98,7 @@ def get_picks(
         ).all():
             raw_events[row.id] = row.event_key
 
-    followed_ids: set[uuid.UUID] = set()
+    personal_stakes: dict[uuid.UUID, float] = {}
     outcome_scores: dict[uuid.UUID, str] = {}
     if signals:
         sig_ids = [s.id for s in signals]
@@ -107,7 +109,9 @@ def get_picks(
                 UserSignalView.followed.is_(True),
             )
         ).all():
-            followed_ids.add(view.signal_id)
+            personal_stakes[view.signal_id] = (
+                float(view.stake) if view.stake is not None else 0.0
+            )
         for outcome in session.scalars(
             select(SignalOutcome).where(SignalOutcome.signal_id.in_(sig_ids))
         ).all():
@@ -120,8 +124,9 @@ def get_picks(
         _build_pick(
             s,
             raw_events.get(s.raw_event_id, ""),
-            s.id in followed_ids,
+            s.id in personal_stakes,
             outcome_scores.get(s.id),
+            personal_stakes.get(s.id),
         )
         for s in signals
     ]
